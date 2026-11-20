@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { LocalDateSchema } from './dates.js';
+import { CSV_DATE_FORMAT_LABELS, CSV_DATE_FORMATS, CSV_SAMPLE_ROWS, CSV_UPLOAD_MAX_BYTES, CsvColumnSchema, CsvDateColumnSchema, type CsvDateFormat } from './csvImport.js';
 import { ConnectionStatusSchema } from './integrations.js';
 import { PLAID_LINK_ERRORS, type PlaidLinkError } from './plaid.js';
 
@@ -46,21 +47,21 @@ export const SAVINGS_END_SOURCES = [...SAVINGS_BALANCE_SOURCES, 'mixed'] as cons
 export const SAVINGS_IMPORT_FORMATS = ['fidelity_cash', 'fidelity_brokerage', 'custom'] as const;
 export type SavingsImportFormat = (typeof SAVINGS_IMPORT_FORMATS)[number];
 
-/** How a file writes its dates: `YYYY-MM-DD`, `M/D/YYYY`, `D/M/YYYY`, padded or not. */
-export const SAVINGS_DATE_FORMATS = ['ymd', 'mdy', 'dmy'] as const;
-export type SavingsDateFormat = (typeof SAVINGS_DATE_FORMATS)[number];
-export const SAVINGS_DATE_FORMAT_LABELS: Record<SavingsDateFormat, string> = { ymd: 'YYYY-MM-DD', mdy: 'M/D/YYYY', dmy: 'D/M/YYYY' };
+/** How a file writes its dates (shared with Spend, csvImport.ts). */
+export const SAVINGS_DATE_FORMATS = CSV_DATE_FORMATS;
+export type SavingsDateFormat = CsvDateFormat;
+export const SAVINGS_DATE_FORMAT_LABELS = CSV_DATE_FORMAT_LABELS;
 
 /** What a description group's rows count as (the CSV import spec, "What rows mean"). */
 export const SAVINGS_GROUP_CHOICES = ['deposit', 'withdrawal', 'by_sign', 'not_counted'] as const;
 export type SavingsGroupChoice = (typeof SAVINGS_GROUP_CHOICES)[number];
 
 /** A column, by its index in the header (plan decision 3). */
-const ColumnSchema = z.number({ error: 'Choose a column.' }).int('Choose a column.').min(0, 'Choose a column.').max(199, 'Choose a column.');
+const ColumnSchema = CsvColumnSchema;
 
 /** Which column plays each role (the CSV import spec, "Mapping columns"). */
 export const SavingsMappingSchema = z.object({
-  date: z.object({ column: ColumnSchema, format: z.enum(SAVINGS_DATE_FORMATS, { error: 'Choose how the dates are written.' }) }),
+  date: CsvDateColumnSchema,
   amount: z.discriminatedUnion('kind', [
     /** One signed column; `inIsNegative` for a bank that writes money in as negative. */
     z.object({ kind: z.literal('signed'), column: ColumnSchema, inIsNegative: z.boolean() }),
@@ -96,9 +97,9 @@ export interface SavingsImportDraftPlan {
 }
 
 /** The most a CSV upload may be: Spend's limit. */
-export const SAVINGS_CSV_MAX_BYTES = 5 * 1024 * 1024;
+export const SAVINGS_CSV_MAX_BYTES = CSV_UPLOAD_MAX_BYTES;
 /** How many rows the mapping step shows (the spec's sample). */
-export const SAVINGS_SAMPLE_ROWS = 8;
+export const SAVINGS_SAMPLE_ROWS = CSV_SAMPLE_ROWS;
 
 /** A description group. `choice` null: not decided yet (a new group; plan decision 13); `suggested` is what the form starts with. */
 export const SavingsImportGroupSchema = z.object({

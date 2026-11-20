@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { LocalDateSchema } from './dates.js';
+import { CSV_DATE_FORMATS, CSV_UPLOAD_MAX_BYTES, CsvColumnSchema, CsvDateColumnSchema, type CsvDateFormat } from './csvImport.js';
 import { ConnectionStatusSchema } from './integrations.js';
 import { MAX_AMOUNT_CENTS } from './money.js';
 
@@ -70,6 +71,62 @@ export const POSSIBLE_DUPLICATE = 'Possible duplicate (different reference numbe
  */
 export const IMPORT_REPLACED_ROW = 'Already shown from the bank. Importing keeps it with this file instead of adding it twice.';
 
+/**
+ * The format an import was read with (the generic import design, "Saved per card"; plan decision
+ * 12): Bank of America's built-in layout, or the admin's own columns. Stored in `csv_imports.format`;
+ * null, an import from before migration 0015, reads as `bofa_credit`.
+ */
+export const SPEND_IMPORT_FORMATS = ['bofa_credit', 'custom'] as const;
+export type SpendImportFormat = (typeof SPEND_IMPORT_FORMATS)[number];
+
+/** Where an upload's columns came from: the card's saved columns, a built-in format, or a guess the admin confirms. */
+export const IMPORT_PREFILLS = ['profile', 'builtin', 'guess'] as const;
+export type ImportPrefill = (typeof IMPORT_PREFILLS)[number];
+
+/** Which column plays each role in a card's CSV (the generic import design, "Map columns"). Columns by their index in the header. */
+export const CardMappingSchema = z.object({
+  date: CsvDateColumnSchema,
+  amount: z.discriminatedUnion('kind', [
+    /** One signed column. `purchasesNegative`: the issuer writes money spent as negative (Bank of America does). */
+    z.object({ kind: z.literal('signed'), column: CsvColumnSchema, purchasesNegative: z.boolean() }),
+    /** Charges, and payments and credits, in separate columns, both read as positive whatever sign the issuer wrote. */
+    z.object({ kind: z.literal('split'), charges: CsvColumnSchema, credits: CsvColumnSchema }),
+  ], { error: 'Choose the amount column, or the charges and the payments and credits columns.' }),
+  /** The transaction's raw name: rules, the duplicate test, and display use it, as the Payee is used today. */
+  description: CsvColumnSchema,
+  /** The issuer's own id for the row. Without one, each row gets a key (plan decision 10). */
+  reference: CsvColumnSchema.nullable(),
+  /** Stored where Bank of America's Address is (`csv_address`). */
+  address: CsvColumnSchema.nullable(),
+});
+export type CardMapping = z.infer<typeof CardMappingSchema>;
+
+/**
+ * What a draft import keeps (server only, `csv_import_previews.plan`; plan decision 4): the table's
+ * header and cells, the rows that couldn't be split (by line and why), and the mapping so far, for
+ * an hour. Never the preamble, the footer's text, or the file.
+ */
+export interface SpendImportDraftPlan {
+  header: string[];
+  rows: { line: number; cells: string[] }[];
+  bad: { line: number; reason: string }[];
+  /** Non-blank lines after the table's last row, skipped as a footer: a count only. */
+  trailingSkipped: number;
+  /**
+   * Each column's date formats, worked out once at upload (the final review's M3) so a columns step
+   * doesn't read every cell again. Absent on drafts saved before it was kept: worked out then.
+   */
+  dateFormats?: CsvDateFormat[][];
+  mapping: CardMapping | null;
+  format: SpendImportFormat;
+  prefilled: ImportPrefill;
+  /**
+   * The built-in format was used because the card's saved columns didn't fit: Import keeps the saved
+   * columns instead of replacing them. Cleared once the admin chooses columns.
+   */
+  keepProfile?: boolean;
+}
+
 // --- The API (spec §13): inputs, responses, and the messages people see. ---
 
 const PositiveIdSchema = (message: string) => z.int({ error: message }).positive(message);
@@ -79,7 +136,7 @@ export const CATEGORY_NAME_MAX = 40;
 export const RULE_TEXT_MAX = 100;
 export const NOTE_MAX = 1000;
 /** The CSV upload limit (spec §12.13). */
-export const CSV_MAX_BYTES = 5 * 1024 * 1024;
+export const CSV_MAX_BYTES = CSV_UPLOAD_MAX_BYTES;
 
 const MASK_MESSAGE = 'Enter the last 2 to 4 characters of the card number, or leave it empty';
 
@@ -439,11 +496,40 @@ export const SpendSummarySchema = z.object({
 });
 export type SpendSummary = z.infer<typeof SpendSummarySchema>;
 
-/** POST /imports (admins, multipart: `cardId` and `file`): the preview (spec §12.13). */
+/** The columns step's material (the generic import design, "Map columns"): sent with every answer, so the preview can go back to it. */
+export const ImportColumnsSchema = z.object({
+  header: z.array(z.string()),
+  /** The first CSV_SAMPLE_ROWS rows' cells. */
+  sample: z.array(z.array(z.string())),
+  /** The table's rows: those the columns are read from, and those that couldn't be split. */
+  rowCount: z.number(),
+  /** How many non-blank lines after the table's last row were skipped as a footer: a count, never their contents. */
+  trailingSkipped: z.number(),
+  /** Each column's date formats (none: not a date column). Two for the date column: the admin chooses. */
+  dateFormats: z.array(z.array(z.enum(CSV_DATE_FORMATS))),
+  /** A starting point when `mapping` is null: a guess, or saved columns that don't fit. */
+  suggested: CardMappingSchema.nullable(),
+  /** Why the card's saved columns didn't fit this file, or null. */
+  problem: z.string().nullable(),
+  /** A hint about the file (Bank of America's checking export belongs in Savings), or null. */
+  hint: z.string().nullable(),
+});
+export type ImportColumns = z.infer<typeof ImportColumnsSchema>;
+
+/**
+ * POST /imports (admins, multipart: `cardId` and `file`) and PUT /imports/:id: the draft (spec
+ * §12.13, the generic import design). `step` `columns`: the admin chooses the columns first, and
+ * `rows` is empty; `preview`: the rows as they'd import.
+ */
 export const ImportPreviewSchema = z.object({
   id: z.string(),
   card: CardOptionSchema,
   fileName: z.string().nullable(),
+  step: z.enum(['columns', 'preview']),
+  format: z.enum(SPEND_IMPORT_FORMATS),
+  prefilled: z.enum(IMPORT_PREFILLS),
+  mapping: CardMappingSchema.nullable(),
+  columns: ImportColumnsSchema,
   rows: z.array(PreviewRowSchema),
   /** The earliest and latest posted dates among rows that can be imported. */
   dateRange: z.object({ from: LocalDateSchema, to: LocalDateSchema }).nullable(),
@@ -451,6 +537,22 @@ export const ImportPreviewSchema = z.object({
   expiresAt: z.string(),
 });
 export type ImportPreview = z.infer<typeof ImportPreviewSchema>;
+
+/** PUT /imports/:id: the columns the admin chose. */
+export const ImportUpdateInputSchema = z.object({ mapping: CardMappingSchema });
+
+/** GET /cards/:id/import-profile (admins): the card's saved columns. `format` is worked out from them (plan decision 12). */
+export const ImportProfileSchema = z.object({
+  cardId: z.number(),
+  format: z.enum(SPEND_IMPORT_FORMATS),
+  header: z.array(z.string()),
+  mapping: CardMappingSchema,
+  updatedAt: z.string(),
+  updatedBy: z.string().nullable(),
+});
+export type ImportProfile = z.infer<typeof ImportProfileSchema>;
+export const ImportProfileResponseSchema = z.object({ profile: ImportProfileSchema.nullable() });
+export type ImportProfileResponse = z.infer<typeof ImportProfileResponseSchema>;
 
 /**
  * POST /imports/:id/commit: the line numbers of the rows to import, at least one. A save where no
@@ -475,6 +577,8 @@ export const CsvImportRecordSchema = z.object({
   /** Who uploaded it, or null when they're gone. */
   uploadedBy: z.string().nullable(),
   importedCount: z.number(),
+  /** The format it was read with; one from before 0015 is Bank of America's. */
+  format: z.enum(SPEND_IMPORT_FORMATS),
   /** Its transactions still stored: what an undo deletes. */
   transactionCount: z.number(),
 });
@@ -544,4 +648,14 @@ export const SPEND_MESSAGES = {
   importTooBig: 'That file is too big. The limit is 5 MB.',
   importCardMismatch: (fileMask: string, cardMask: string) =>
     `The file name ends in ${fileMask}, but this card's last 4 is ${cardMask}. Check that you picked the right card.`,
+  importNotReady: 'Choose the columns first.',
+  importProfileNotFound: 'This card has no saved columns. Reload the page.',
+  importColumnMissing: "That column isn't in this file. Choose the columns again.",
+  importSameColumn: 'Each column can only have one role.',
+  importBadDate: (line: number, format: string) => `Line ${line}'s date isn't a date written as ${format}. Check the date column and format.`,
+  importBadAmount: (line: number) => `Line ${line}'s amount isn't a number like 1,234.56 or (12.00). Check the amount columns.`,
+  importSavedDoesntFit: (why: string) => `The saved columns don't fit this file: ${why} Choose the columns again.`,
+  importSavedReadNothing: 'None of the rows could be read with them.',
+  importSavedNotUsed: "Your saved columns didn't fit this file, so Bank of America's format was used. Importing keeps your saved columns; to replace them, change the columns.",
+  importCheckingHint: 'This looks like a Bank of America checking or savings export. Card activity is imported here; checking and savings go in Savings.',
 } as const;

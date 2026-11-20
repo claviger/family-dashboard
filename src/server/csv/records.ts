@@ -1,7 +1,8 @@
 /**
  * A small, strict CSV parser (RFC 4180), written here rather than added as a dependency: the
  * importer needs only records and fields, and it needs one bad row to fail on its own, with its
- * line number, without taking the rest of the file with it.
+ * line number, without taking the rest of the file with it. Shared by Spend's and Savings' importers
+ * (`src/server/csv/`).
  *
  * - Records end at CRLF, LF, or a lone CR (BofA's line endings are unverified, research §1.2).
  *   Empty lines are skipped (nothing is made for them), but still counted for line numbers.

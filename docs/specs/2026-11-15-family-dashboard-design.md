@@ -899,33 +899,47 @@ Each transaction's category and person are decided by these rules, in order:
 
 ### 12.13 CSV import (admins only)
 
-- **Upload:** the admin picks a card (not an archived one) and uploads a Bank of America credit-card activity CSV, up to 5 MB and 20,000 rows, as a form upload behind the CSRF check. The browser checks the size first too.
-- **Expected format** (docs/research/spend-plaid-csv.md §1, from community importers; still to check against a real export, §19):
-  - The first line is exactly `Posted Date,Reference Number,Payee,Address,Amount` (after trimming each cell). Only the first non-blank line is checked: a file whose header is further down is refused.
-  - UTF-8, a byte order mark allowed; lines end in CRLF, LF, or CR. Every field is trimmed (BofA pads them). Dates are `MM/DD/YYYY`. Amounts have no currency symbol, with or without thousands separators.
-  - BofA exports purchases as negative amounts. The importer flips the sign to match the app's convention (positive means money spent).
-  - Reference numbers are stored as text: they're 23 digits, too long for an integer.
-  - Bank of America's checking and savings export is recognized and refused with a message saying only credit-card activity can be imported. Any other header is refused with a message naming the expected one; one that has `Posted Date` but other columns also names the columns found (the header only, never row data).
-  - The parser is a small strict RFC 4180 parser: a malformed row fails on its own, with its line number. For this file a quoted value may not span lines (BofA's never do), so a quote still open at the end of its line fails that row, and a file of stray quotes stays quick to read. Empty lines are skipped.
-  - A payee or address over 200 characters, a reference number over 40, or a posted date before 2000 or more than 31 days after today makes the row unreadable.
+- **Upload:** the admin picks a card (not an archived one) and uploads its issuer's activity CSV, up to 5 MB, 20,000 rows, and 200 columns, as a form upload behind the CSRF check. The browser checks the size first too. Any issuer's file works (docs/specs/2026-11-20-spend-csv-generic-design.md).
+- **Finding the table** follows the Savings importer's rules (§21.8), with Spend's differences:
+  - The preamble is skipped. The header is the first row of names followed by a row with as many values; failing that, Spend takes the first row of names that a later row fits (so a short or broken first row is listed, not a refusal).
+  - Blank lines and blank rows are skipped. The table ends after the last row with the header's number of values. What follows is a footer: for an issuer's own columns it's skipped and the preview says how many lines (never what they say); Bank of America's files have no footer, so there those lines are listed as unreadable rows.
+  - Strict UTF-8, with or without a byte order mark. CRLF, LF, or CR. Quoted fields, one record per line: a quote still open at the end of its line fails that row. Every field is trimmed.
+  - A row between the header and the last fitting row that can't be split into the header's columns (a stray quote, another number of values) is listed as unreadable by its line number, never its contents. It doesn't refuse the file.
+- **Map columns.** This step is skipped when the card's saved columns or a built-in format apply. The admin sees the column names and the first 8 rows and picks:
+  - **Date** (required): `YYYY-MM-DD`, `M/D/YYYY`, or `D/M/YYYY`, padded or not, from the formats every value fits. When every day is 12 or under, the format starts blank and the admin chooses. A row with an empty date is skipped and counted as not posted yet.
+  - **Amount:** one signed column with **Purchases are negative in this file** (Bank of America: on), or separate **Charges** and **Payments and credits** columns, both read as positive whatever sign the issuer wrote; a row with both a charge and a credit (neither zero) is unreadable. Money is read as the Savings importer reads it: currency signs, a leading sign, parentheses, and thousands separators. Decimal commas aren't read. The importer gives every amount the app's sign: positive means money spent.
+  - **Description / payee** (required): the transaction's raw name, used by rules, the duplicate test, and display.
+  - **Reference number** (optional), stored as text (Bank of America's are 23 digits, too long for an integer).
+  - **Address / location** (optional).
+
+  The server checks every row. It refuses a mapping that names a column the file doesn't have, gives one column two roles, or can't read a row's date or amount, naming that line and the role. A built-in format's own columns apply on the header alone: rows they can't read are listed, as at upload.
+- **Built-in formats** are recognized by exact header:
+  - Bank of America's credit card export: `Posted Date, Reference Number, Payee, Address, Amount`, `M/D/YYYY`, purchases negative, and `TEMPRET` references skipped as not posted and never stored. It goes straight to the preview, with any row it can't read listed.
+  - Bank of America's checking and savings export isn't refused by name. It maps like any file, and the columns step says checking and savings go in Savings.
+- **Saved per card.**
+  - At Import, the card saves the header's names, the column for each role, the date format, and the sign setting.
+  - The next file whose header matches exactly, and whose dates and amounts those columns read, goes straight to the preview. One they don't read (or one in which they read no row at all) opens the columns step with them filled in, saying why.
+  - Saved columns come before a built-in format, and both come before a guess from the column names, which the admin confirms. When saved columns don't fit a file with a built-in format's header, the built-in format is used, the preview says so, and Import keeps the saved columns unless the admin chooses columns.
+  - The card's Imports area shows the saved columns, with **Clear saved columns**.
+- A payee or address over 200 characters, a reference number over 40 (or one that starts like the importer's keys, `k1:`), or a date before 2000 or more than 31 days after today makes the row unreadable.
 - **Preview before saving:**
-  - The server reads the file and keeps only the rows, for an hour, under a random id, bound to the admin who uploaded it (a new upload replaces their earlier preview).
-  - Number of rows, date range, rows flagged as likely duplicates, and the rows that can't be imported, with why: unreadable (wrong number of values, a bad date or amount, no reference number or payee, a stray quote), a reference number already stored, one repeated in the file, or a temporary credit that hasn't posted (an empty date, or `TEMPRET` as the reference; `TEMPRET` is never stored).
-  - Warnings, which don't block saving: most rows are credits after the sign flip (the sign convention may have changed), or the file name ends in last 4 digits that don't match the card's. A row that passes the duplicate test in everything but the reference number (both have one, and they differ) isn't a duplicate, but it's shown with "Possible duplicate (different reference number)" and the transaction it looks like, still ticked, so a bank that renumbers transactions between downloads gets noticed.
+  - The server reads the file and keeps its table (the header and cells) and the rows read from it, for an hour, under a random id, bound to the admin who uploaded it (a new upload replaces their earlier draft). It keeps the cells for the columns step and **Change the columns**. Nothing outside the mapped fields is ever stored with a transaction.
+  - Number of rows, date range, rows flagged as likely duplicates, and the rows that can't be imported, with why: unreadable (wrong number of values, a bad date or amount, no reference number in a file with a reference column, no description, a stray quote), a reference number already stored, one repeated in the file, or a temporary credit that hasn't posted (an empty date, or Bank of America's `TEMPRET` as the reference; `TEMPRET` is never stored).
+  - Warnings, which don't block saving: most rows are credits after the sign flip (the sign convention may have changed), or a Bank of America file's name ends in last 4 digits that don't match the card's. The preview has **Change the columns**, which goes back to the columns step. A row that passes the duplicate test in everything but the reference number (both have one, and they differ) isn't a duplicate, but it's shown with "Possible duplicate (different reference number)" and the transaction it looks like, still ticked, so a bank that renumbers transactions between downloads gets noticed.
   - The admin can include or exclude individual rows. Likely duplicates start out excluded. Saving imports the rows that are ticked.
 - **Duplicate test.** A row is a duplicate of an existing transaction when all of these hold:
   - Same card
   - Same amount
   - Dates no more than 3 days apart
-  - The bank hasn't said they differ: if both have a reference number, it's the same one. (So a CSV row is only ever a likely duplicate of a row without one, such as a Plaid transaction.)
+  - The bank hasn't said they differ: if both have a reference number from the bank, it's the same one. (So a CSV row with one is only ever a likely duplicate of a row without one, such as a Plaid transaction.) A row's key (below) isn't a reference number here: a key-only row behaves like a row without one.
   - Similar merchant text. Normalize both strings: uppercase, turn anything that isn't a letter or digit into a space, collapse runs of spaces, and trim. They're similar if one starts with the other's first 8 characters, with the spaces kept or with them all removed (so "CVS/PHARMACY" matches "CVSPHARMACY"), or if at least half of the larger set of words is shared. These thresholds are constants that can be tuned.
   - A stored row with both a merchant name and a raw description (a Plaid row) is similar when either one is. Plaid sometimes cleans a merchant name past recognizing ("Tinynonsens" for the bank's "PAYPAL *TINYNONSENS 207-200-") while its raw description keeps the bank's text. This is the import's side of the test; a Plaid row tested against CSV rows likewise tries its merchant name, then its raw description.
   - Matching is one to one: rows are matched in file order, each to the nearest-date transaction still unmatched, so two same-amount tolls a day apart don't both match one stored toll.
 - **Imported rows:**
   - Get source `csv` and keep their reference number.
   - Have rules applied. They have no Plaid category, so a row that no rule matches is Uncategorized.
-- **Importing the same file again:** rows whose reference number is already stored for that card are skipped, including deleted rows (a CSV row that a Plaid transaction replaced, or one removed as a duplicate, never comes back).
-- **Each saved import is recorded** (card, file name, a SHA-256 of the file, who, when, and counts), never the file itself. Nothing from the file is ever logged: log lines carry counts only.
+- **Importing the same file again:** rows whose reference number is already stored for that card are skipped, including deleted rows (a CSV row that a Plaid transaction replaced, or one removed as a duplicate, never comes back). A file with no reference column gives each row a key: `k1:` and a SHA-256 of the card id, the date, the amount in cents, the white-space-collapsed description, and the row's place among identical rows that day in file order (so two identical $5 coffees on one day stay two). It's stored in `csv_reference`, so the same rule skips it, and Undo, Plaid replacement, and Remove duplicate treat these rows like any CSV row. Keys are never shown. A file that rewords a row between downloads makes a second copy, which the duplicate test usually flags.
+- **Each saved import is recorded** (card, file name, a SHA-256 of the file, the format, `bofa_credit` or `custom`, who, when, and counts), never the file itself. Nothing from the file is ever logged: log lines carry counts only.
 - **When Plaid later delivers a transaction that matches a CSV row** by the duplicate test:
   - Only posted Plaid transactions replace CSV rows. A CSV row is a posted transaction, and a pending amount can still change (a fuel hold, a tip), so a pending row shows beside its CSV twin until it posts.
   - Each new posted Plaid row is tested against the live CSV rows on its card, with its merchant name, then its raw description.
@@ -1118,8 +1132,9 @@ All timestamps are stored in UTC. Date-only values, such as due dates, closing d
 | `categories` | id, name (unique ignoring case), kind (normal / excluded / uncategorized; one row of each special kind), sort_order, archived |
 | `category_mappings` | plaid_pfc, taxonomy_version (v1 / v2), category_id |
 | `rules` | id, position, match_text, match_type, card_id, min_cents, max_cents, set_category_id, set_person (household / user / null), set_person_user_id |
-| `csv_imports` | id, card_id, file_name, file_sha256, uploaded_by_user_id, uploaded_at, row_count, imported_count, skipped_count |
-| `csv_import_previews` | id (random), user_id, card_id, file_name, file_sha256, rows (the parsed rows, never the file), created_at, expires_at (an hour) |
+| `csv_imports` | id, card_id, file_name, file_sha256, uploaded_by_user_id, uploaded_at, row_count, imported_count, skipped_count, format (bofa_credit / custom; null, from before 0015, reads as bofa_credit) |
+| `csv_import_previews` | id (random), user_id, card_id, file_name, file_sha256, rows (the parsed rows, never the file), plan (the table's header and cells, the rows that couldn't be split, and the mapping so far), created_at, expires_at (an hour) |
+| `spend_import_profiles` | id, card_id (unique), header (column names), mapping (the column for each role, date format, sign setting), updated_by_user_id, created_at, updated_at |
 | `savings_accounts` | id, source (plaid / manual), plaid_item_id and plaid_account_id (set exactly when source is plaid; plaid_account_id unique when set), nickname, kind (cash / investment), mask, iso_currency_code, hidden_at, removed_at |
 | `savings_balances` | id, account_id, date (unique per account), current_cents, available_cents, fetched_at, source (plaid / csv / manual), import_id (set exactly for csv) |
 | `savings_flows` | id, account_id, source (transactions / investments / csv), plaid_id (Plaid's id, or a csv flow's occurrence-key hash; unique per source), date, amount_cents (positive), kind (deposit / withdrawal), import_id (set exactly for csv) |

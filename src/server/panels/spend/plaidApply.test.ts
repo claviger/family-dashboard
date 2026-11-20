@@ -2,14 +2,17 @@ import { asc, eq } from 'drizzle-orm';
 import { describe, expect, it } from 'vitest';
 import { addDays, daysBetween } from '../../../shared/dates.js';
 import { MAX_AMOUNT_CENTS } from '../../../shared/money.js';
-import { NOTE_MAX } from '../../../shared/spend.js';
-import { categories, plaidItems, rules, transactions, type PlaidItemAccount, type TransactionRow } from '../../db/schema.js';
+import { IMPORT_REPLACED_ROW, NOTE_MAX, startsTicked, type CardMapping } from '../../../shared/spend.js';
+import { categories, csvImports, plaidItems, rules, transactions, type PlaidItemAccount, type TransactionRow } from '../../db/schema.js';
 import { PlaidClient, type PlaidTransaction } from '../../integrations/plaid/client.js';
 import { FAKE_PLAID_CLIENT_ID, FAKE_PLAID_SECRET, FakePlaid } from '../../test/fakePlaid.js';
 import { call, makeTestApp, type TestApp } from '../../test/helpers.js';
 import { addCard, addCsvImport, addTransaction, categoryId, spendUser, transaction } from '../../test/spendFixtures.js';
 import { DUPLICATE_TEST, similarMerchants } from './duplicates.js';
-import { undoImport } from './imports.js';
+import { isRowKey } from './cardCsv.js';
+import { commitImport, previewImport, undoImport, updateImport } from './imports.js';
+import { bytes } from '../../test/bofaCsv.js';
+import { debitCreditCsv } from '../../test/cardCsv.js';
 import { applySyncRun, emptySyncCounts, pruneRemovedTransactions, REMOVED_KEEP_MS, type SyncApplyCounts, type SyncRun } from './plaidApply.js';
 
 // Everything here is synthetic: the Items, accounts, merchants, and transaction ids.
@@ -1364,5 +1367,45 @@ describe('applySyncRun: rows removed as duplicates stay removed (spec §12.12)',
     apply(run({ added: [ptx('tx-1b')], removed: ['tx-1', 'tx-2'] }));
     expect(transaction(t, a.id)).toMatchObject({ deletedReason: 'duplicate', duplicateOfId: byPlaid(t, 'tx-1b').id });
     expect(transaction(t, b.id)).toMatchObject({ deletedAt: null, deletedReason: null });
+  });
+});
+
+describe('applySyncRun: CSV rows with keys instead of reference numbers (the generic import design)', () => {
+  // A SYNTHETIC Debit and Credit file (src/server/test/cardCsv.ts): one coffee on 10 November, no reference column.
+  const FILE = debitCreditCsv([{ date: '10/11/2026', description: 'CORNER CAFE 123', category: 'Dining', debit: '12.34' }]);
+  const MAPPING: CardMapping = { date: { column: 0, format: 'dmy' }, amount: { kind: 'split', charges: 3, credits: 4 }, description: 1, reference: null, address: null };
+  function importFile(t: TestApp, userId: number, cardId: number) {
+    const p = previewImport(t, userId, { cardId, fileName: 'activity.csv', bytes: bytes(FILE) });
+    const read = p.step === 'columns' ? updateImport(t, userId, p.id, MAPPING) : p;
+    return { read, result: commitImport(t, userId, p.id, startsTicked(read.rows)) };
+  }
+
+  it("replaces a key-only CSV row like any other: its manual fields and note move to the Plaid row, and it keeps its key", () => {
+    const { t, card, apply } = setup();
+    const admin = spendUser(t, { role: 'admin', email: 'admin@example.com' });
+    importFile(t, admin.id, card.id);
+    const csv = allRows(t)[0]!;
+    expect(isRowKey(csv.csvReference)).toBe(true);
+    edit(t, csv.id, { categoryId: categoryId(t, 'Kids'), categorySource: 'manual', note: 'Snacks' });
+    expect(apply(run({ added: [ptx('plaid')] }))).toEqual(counts({ added: 1, replacedCsv: 1 }));
+    expect(byPlaid(t, 'plaid')).toMatchObject({ categoryId: categoryId(t, 'Kids'), categorySource: 'manual', note: 'Snacks', deletedAt: null });
+    expect(transaction(t, csv.id)).toMatchObject({ deletedAt: t.clock.now(), replacedById: byPlaid(t, 'plaid').id, csvReference: csv.csvReference });
+  });
+
+  it('after an undo, re-importing the file adopts the replaced key-only row instead of adding it again', () => {
+    const { t, card, apply } = setup();
+    const admin = spendUser(t, { role: 'admin', email: 'admin@example.com' });
+    importFile(t, admin.id, card.id);
+    const csv = allRows(t)[0]!;
+    apply(run({ added: [ptx('plaid')] }));
+    const imp = t.db.select().from(csvImports).get()!;
+    expect(undoImport(t, admin.id, card.id, imp.id)).toEqual({ removed: 0 });
+    expect(transaction(t, csv.id)).toMatchObject({ csvImportId: null, deletedAt: expect.any(Date), replacedById: byPlaid(t, 'plaid').id });
+    const { read, result } = importFile(t, admin.id, card.id);
+    expect(read.rows[0]).toMatchObject({ status: 'new', reference: csv.csvReference, reason: IMPORT_REPLACED_ROW });
+    expect(result).toEqual({ imported: 1, skipped: 0 });
+    const again = t.db.select().from(csvImports).all().at(-1)!;
+    expect(transaction(t, csv.id)).toMatchObject({ csvImportId: again.id, deletedAt: expect.any(Date), replacedById: byPlaid(t, 'plaid').id });
+    expect(allRows(t)).toHaveLength(2);
   });
 });

@@ -1,4 +1,6 @@
+import type Database from 'better-sqlite3';
 import type { JobDef } from '../../core/jobs.js';
+import { checkpointWal } from '../../db/index.js';
 import type { PanelModule } from '../registry.js';
 import type { BankSync } from '../spend/plaidSync.js';
 import { pruneSavingsImportPreviews } from './imports.js';
@@ -14,8 +16,9 @@ import type { SavingsReadDeps } from './views.js';
  *
  * `savings.pruneImports` (always): import drafts older than an hour, every 15 minutes, as Spend's.
  */
-export function savingsJobs(deps: SavingsReadDeps & { bank?: BankSync | null; savings?: SavingsSync | null }): JobDef[] {
-  const prune: JobDef = { name: 'savings.pruneImports', cron: '*/15 * * * *', run: () => { pruneSavingsImportPreviews(deps); } };
+export function savingsJobs(deps: SavingsReadDeps & { sqlite: Database.Database; bank?: BankSync | null; savings?: SavingsSync | null }): JobDef[] {
+  // As Spend's: drafts deleted since the last run leave old WAL frames, which the checkpoint removes.
+  const prune: JobDef = { name: 'savings.pruneImports', cron: '*/15 * * * *', run: () => { pruneSavingsImportPreviews(deps); checkpointWal(deps.sqlite); } };
   const { bank, savings } = deps;
   if (!bank || !savings) return [prune];
   return [

@@ -4,6 +4,7 @@ import { sleepUnlessAborted, type JobDef } from '../../core/jobs.js';
 import type { Db } from '../../db/index.js';
 import type { Plaid } from '../../integrations/plaid/plaid.js';
 import type { PanelModule } from '../registry.js';
+import { checkpointWal } from '../../db/index.js';
 import { pruneImportPreviews } from './imports.js';
 import { pruneRemovedTransactions } from './plaidApply.js';
 import type { BankSync, RunSummary } from './plaidSync.js';
@@ -106,6 +107,8 @@ export const spendPanel: PanelModule = {
       cron: '*/15 * * * *',
       run: () => {
         pruneImportPreviews(deps);
+        // Drafts deleted since the last run (expired, saved, or cancelled) leave old WAL frames: gone now.
+        checkpointWal(deps.sqlite);
       },
     },
     ...plaidJobs(deps),

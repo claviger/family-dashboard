@@ -15,7 +15,7 @@ Plaid gives no past balances and may not support everything the family needs fro
 ## Importing
 
 - Every account in Savings settings has **Import a CSV** (admins).
-- Steps: upload; **map columns** and **say what rows mean** (skipped when a saved or built-in mapping matches and every group is already decided; see "Reading any bank's CSV"); a **results preview**; then **Import**. Like Spend's CSV import (main spec §12.13), the server reads the file, keeps the parsed rows for an hour under a random id bound to the admin, and nothing from the file is logged.
+- Steps: upload; **map columns** and **say what rows mean** (skipped when a saved or built-in mapping matches and every group is already decided; see "Reading any bank's CSV"); a **results preview**; then **Import**. Like Spend's CSV import (main spec §12.13), the server reads the file and keeps the draft for an hour under a random id bound to the admin, and nothing from the file is logged. The draft holds every column of the file's table, so the admin can map the columns and change them. It's deleted at Import, Cancel, a new upload, or expiry, with `secure_delete` on so its cells are zeroed, and each 15-minute prune checkpoints the WAL (`TRUNCATE`). Backups are scrubbed of drafts before they count. What's left (up to 15 minutes in the WAL after a delete, cells freed before `secure_delete` was turned on, and anything below SQLite) is listed in the generic card import design, "Not stored".
 - The results preview shows the date range, how many deposits, withdrawals, and daily balances it will add, how many are already there (skipped), and each description group with its count and what it counts as (for example "YOU SOLD … (12): not counted"), with a way back to change the choices.
 - Each saved import is recorded: account, file name, a SHA-256 of the file, who, when, and counts. Never the file. An import can be undone, which deletes exactly the flows and balances it added.
 
@@ -25,7 +25,8 @@ The importer is general: it maps columns rather than assuming one bank's layout.
 
 **Finding the table.** The server finds the table in the file without help:
 - It skips preamble lines and takes as the header the first row that looks like column names, where the rows that follow have the same number of fields.
-- It ends the table at a blank line, at text that doesn't have the header's field count (disclaimers, "Date downloaded …"), or at the end of the file.
+- Blank lines and blank rows are skipped. The table ends after the last row with the header's field count; what follows (disclaimers, "Date downloaded …") is a footer and ignored.
+- A line between the header and that last row that doesn't fit is a bad row, and the file is refused with its line number (never its contents). Spend's importer, which shares this table finder, lists such rows instead.
 - It handles quoted fields, a UTF-8 byte-order mark, and CRLF or LF line endings.
 - A file with no recognizable table is refused with a plain message (and a line number, never the line's contents).
 

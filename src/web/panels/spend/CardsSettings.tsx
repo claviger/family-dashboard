@@ -2,8 +2,8 @@ import { useRef, useState, type FormEvent } from 'react';
 import { CARD_NICKNAME_MAX, type Card, type CardInput, type CardStatements, type Closing, type CsvImportRecord, type ImportUndoResult } from '../../../shared/spend.js';
 import { useMe } from '../../shell/useMe.js';
 import { useFocusRegistry } from '../chores/useFocus.js';
-import { cardName, instantDate, longDate } from './format.js';
-import { useCardImports, useCardStatements, useSpendCards, useSpendWrite, type SpendWrite } from './queries.js';
+import { cardName, instantDate, longDate, mappingLines } from './format.js';
+import { useCardImportProfile, useCardImports, useCardStatements, useSpendCards, useSpendWrite, type SpendWrite } from './queries.js';
 
 const SOURCE_LABELS: Record<Closing['source'], string> = { manual: 'Set by hand', plaid: 'From the bank', inferred: 'From the usual closing day' };
 
@@ -12,6 +12,7 @@ const UNDO_PATH = /^\/cards\/(\d+)\/imports\/\d+$/;
 
 /** "add", "delete", "undo", or "save", for "Couldn't … X". */
 function failedVerb(v: SpendWrite): string {
+  if (/\/import-profile$/.test(v.path)) return 'clear';
   if (UNDO_PATH.test(v.path)) return 'undo';
   if (v.method === 'DELETE') return 'delete';
   if (v.method === 'POST' && !/\/(archive|unarchive|move|apply)$/.test(v.path)) return 'add';
@@ -239,6 +240,7 @@ function ImportHistory({ card, write, busy, timeZone }: { card: Card; write: (v:
                   <span className="todo-due">
                     Imported {when}
                     {i.uploadedBy && ` by ${i.uploadedBy}`} · {count}
+                    {i.format === 'custom' && ' · custom columns'}
                   </span>
                 </span>
                 <span className="todo-actions chore-actions">
@@ -262,9 +264,40 @@ function ImportHistory({ card, write, busy, timeZone }: { card: Card; write: (v:
           })}
         </ul>
       )}
+      <SavedColumns card={card} write={write} busy={busy} />
       <p className="muted spend-form-note">
         Undo deletes an import's transactions, so the file can be imported again. It isn't possible once any of them has a category, person, or note set by hand.
       </p>
+    </section>
+  );
+}
+
+/**
+ * A card's saved columns (the generic import design, "Saved per card"), in words, with Clear. The
+ * next file whose column names match these exactly is read with them; Clear goes back to a built-in
+ * format or a guess.
+ */
+function SavedColumns({ card, write, busy }: { card: Card; write: (v: SpendWrite) => void; busy: boolean }) {
+  const saved = useCardImportProfile(card.id);
+  if (saved.isPending) return null;
+  if (!saved.data) return <p className="error">{saved.error?.message}</p>;
+  const p = saved.data.profile;
+  if (!p) return <p className="muted">No saved columns. They're saved when a file is imported.</p>;
+  return (
+    <section aria-label={`Saved columns for ${card.nickname}`} className="spend-saved-columns">
+      <h5>Saved columns</h5>
+      <ul>{mappingLines(p.header, p.mapping).map((line) => <li key={line}>{line}</li>)}</ul>
+      <p className="muted">Used for the next file whose columns are exactly: {p.header.join(', ')}.</p>
+      <button
+        type="button"
+        aria-disabled={busy}
+        onClick={() => {
+          if (busy) return;
+          write({ method: 'DELETE', path: `/cards/${card.id}/import-profile`, label: `the saved columns for ${card.nickname}`, done: `Cleared the saved columns for ${card.nickname}.` });
+        }}
+      >
+        Clear saved columns
+      </button>
     </section>
   );
 }
@@ -302,6 +335,9 @@ export function CardsSettings() {
         return;
       }
       setStatus(v.done ?? `${v.method === 'DELETE' ? 'Deleted' : 'Saved'} ${v.label}.`);
+      // Clear saved columns: focus goes back to the card's Imports button, as an undo's does.
+      const cleared = /^\/cards\/(\d+)\/import-profile$/.exec(v.path);
+      if (cleared) focus.focusLater(() => focus.get(`imports-${cleared[1]}`), v.from);
       const cardEdit = v.method === 'PUT' && /^\/cards\/\d+$/.test(v.path);
       if (v.path === '/cards' || cardEdit) setMode(null);
       // A saved edit goes back to the card's Edit button, in its new place once the list has refreshed

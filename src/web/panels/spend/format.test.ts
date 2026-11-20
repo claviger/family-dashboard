@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { POSSIBLE_DUPLICATE, type PreviewRow, type SpendTransaction } from '../../../shared/spend.js';
+import { POSSIBLE_DUPLICATE, type CardMapping, type ImportColumns, type PreviewRow, type SpendTransaction } from '../../../shared/spend.js';
 import {
   cardName, changeLine, cycleLabel, cycleOption, excludedNote, instantDate, longDate, movedLine, otherCurrencyLine, pendingAmount, periodNames, personName,
-  previewNote, resettableFields, rowLabels, shortDate, sourceNote, totalWords, updatedLine,
+  mappingLines, prefilledNote, previewNote, resettableFields, rowLabels, shortDate, skippedNote, sourceNote, totalWords, updatedLine,
 } from './format.js';
 
 describe('dates and cycles', () => {
@@ -192,5 +192,43 @@ describe('resettableFields (review C-M8)', () => {
     expect(resettableFields({ ...base, person: { ...active, active: false } })).toEqual(['person']);
     // Household can always be assigned.
     expect(resettableFields({ ...base, person: null })).toEqual([]);
+  });
+});
+
+describe('the import words (the generic import design)', () => {
+  const header = ['Transaction Date', 'Description', 'Category', 'Debit', 'Credit'];
+  const split: CardMapping = { date: { column: 0, format: 'dmy' }, amount: { kind: 'split', charges: 3, credits: 4 }, description: 1, reference: null, address: null };
+  const cols = (patch: Partial<ImportColumns> = {}): ImportColumns => ({ header, sample: [], rowCount: 1, trailingSkipped: 0, dateFormats: [], suggested: null, problem: null, hint: null, ...patch });
+
+  it('says the saved columns one role a line', () => {
+    expect(mappingLines(header, split)).toEqual([
+      'Date: Transaction Date, written D/M/YYYY',
+      'Amount: Debit for charges, Credit for payments and credits',
+      'Description: Description',
+      'Reference number: none, so each row gets a key from its date, amount, and description',
+      'Address: none',
+    ]);
+    expect(mappingLines(['Posted Date', 'Reference Number', 'Payee', 'Address', ''], { date: { column: 0, format: 'mdy' }, amount: { kind: 'signed', column: 4, purchasesNegative: true }, description: 2, reference: 1, address: 3 })).toEqual([
+      'Date: Posted Date, written M/D/YYYY',
+      'Amount: Column 5, purchases negative',
+      'Description: Payee',
+      'Reference number: Reference Number',
+      'Address: Address',
+    ]);
+  });
+
+  it('says where the columns came from, and nothing when saved ones did not fit', () => {
+    expect(prefilledNote({ prefilled: 'profile', format: 'custom', columns: cols() })).toBe("Read with this card's saved columns. If something looks wrong, change the columns.");
+    expect(prefilledNote({ prefilled: 'builtin', format: 'bofa_credit', columns: cols() })).toBe("This is a Bank of America credit card file, so it's read the way Bank of America writes it.");
+    expect(prefilledNote({ prefilled: 'guess', format: 'custom', columns: cols({ suggested: split }) })).toBe('The columns are a guess from their names. Check each one.');
+    expect(prefilledNote({ prefilled: 'guess', format: 'custom', columns: cols() })).toBeNull();
+    expect(prefilledNote({ prefilled: 'profile', format: 'custom', columns: cols({ suggested: split, problem: 'x' }) })).toBeNull();
+    expect(prefilledNote({ prefilled: 'builtin', format: 'bofa_credit', columns: cols({ problem: 'x' }) })).toBeNull();
+  });
+
+  it('says how many lines after the table were skipped, never what they said', () => {
+    expect(skippedNote(cols())).toBeNull();
+    expect(skippedNote(cols({ trailingSkipped: 1 }))).toBe('1 line after the table was skipped, as a footer.');
+    expect(skippedNote(cols({ trailingSkipped: 2 }))).toBe('2 lines after the table were skipped, as a footer.');
   });
 });

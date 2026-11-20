@@ -21,7 +21,7 @@ The money panels work with whatever financial institutions you use. Nothing is t
 
 | Kind of account | Panel | How it comes in |
 | --- | --- | --- |
-| Credit cards | Spend | Through [Plaid](https://plaid.com) from any card issuer Plaid supports, or from a CSV export (Bank of America's format is built in today) |
+| Credit cards | Spend | Through [Plaid](https://plaid.com) from any card issuer Plaid supports, or from any issuer's CSV export through a column-mapping importer (Bank of America's format is built in) |
 | Checking, savings, and cash management accounts | Savings | Through Plaid from any bank Plaid supports, from any bank's CSV export, or added by hand |
 | Brokerage and other investment accounts | Savings | Through Plaid (with its Investments product) from any brokerage Plaid supports, from any brokerage's CSV export, or added by hand with balances you set |
 
@@ -278,25 +278,33 @@ Details:
 
 Without Plaid, Spend gets its transactions from CSV files an admin downloads from the card issuer and imports. With Plaid, CSV files bring in history from before the card was linked, or fill gaps in what Plaid sent.
 
-**Today Spend reads one format, Bank of America's credit card export.** Cards from other issuers come in through Plaid. Spend's importer checks for that one header, unlike the Savings importer, which maps any file's columns; adding another issuer's format means adding a parser alongside `src/server/panels/spend/bofa.ts`. Contributions welcome.
+Any issuer's CSV works. Like the Savings importer, Spend shows you the file's columns and you say which is which:
+
+1. In the dashboard, open **Spend → Settings → Import a CSV**, pick the card, choose the file, and press **Preview**.
+2. You see the file's column names and first 8 rows. Pick the date column (and, if every day in it is 12 or under, whether dates are month or day first; it never guesses), the amount (one signed column, with a switch for files where purchases are negative, or separate charges and payments columns), the description, and optionally the reference number and address. Then press **Preview**.
+3. Check the preview, as below, and press **Import**.
+
+When you import, the card remembers its columns, and the next file with exactly the same column names goes straight to the preview. The card's **Imports** area shows them, with **Clear saved columns**. A few formats are also **built in** and skip the columns step: today that's Bank of America's credit card export. Bank of America's built-in format is in `src/server/panels/spend/bofa.ts`, and adding one for another issuer is a small, self-contained change alongside it.
 
 For Bank of America (the bank doesn't document the file, so the format comes from other people's importers; see `docs/research/spend-plaid-csv.md` §1):
 
 1. Sign in to Bank of America's website and open the credit card's account activity.
 2. Choose **Download**, pick the **Transaction Period** (or the statement) you want, and pick **Microsoft Excel Format**. That gives a `.csv` file, whose name may end in the card's last 4 (such as `April2026_1234.csv`). Bank of America offers about 12 months of activity this way.
-3. In the dashboard, open **Spend → Settings → Import a CSV**, pick the card, choose the file, and press **Preview**.
+3. In the dashboard, open **Spend → Settings → Import a CSV**, pick the card, choose the file, and press **Preview**. It goes straight to the preview.
 4. Check the preview: how many rows there are, the dates they cover, any possible duplicates (see below), and rows that can't be imported, with why (for example a row that's already imported, or a temporary credit that hasn't posted yet). Then press **Import**.
 
 Details:
 
-- Only the credit-card activity file works. The checking and savings export is refused with a message saying so, and so is any file whose first line isn't `Posted Date,Reference Number,Payee,Address,Amount`.
+- **Finding the table.** The importer finds the table even under a few lines of preamble. Rows that don't fit are listed as unreadable, by line and why, and the rest imports. For an issuer's own columns, lines after the table are skipped as a footer and the preview says how many; Bank of America's files have no footer, so there they're listed as unreadable. A row with both a charge and a credit is unreadable, not netted. Rows with no date are skipped as not posted yet.
+- A checking or savings export isn't for Spend: if you upload one, the columns step says so and points to Savings.
+- **Files without reference numbers.** Each row gets a key from the card, its date, amount, and description, and its place among identical rows that day, so an overlapping file adds only what's new and two identical coffees on one day stay two. Keys are never shown. If the issuer rewords a row between downloads, the reworded one usually shows as "Looks like one already here", unticked.
 - Files can be up to 5 MB and 20,000 rows. The nginx example sets `client_max_body_size 6m`, a little more than the file limit, because nginx counts the whole upload. That way a file over 5 MB gets the dashboard's "The limit is 5 MB" message, not an error page from nginx. Real exports are far smaller.
-- Importing the same file again, or a file that overlaps an earlier one, skips every row whose reference number is already stored. Those rows show as "Already imported".
-- **Possible duplicates.** A row with a new reference number that otherwise looks like a stored transaction (the same card and amount, posted within 3 days, and a similar merchant) is still a new transaction, because Bank of America numbered it differently. The preview marks it "Possible duplicate (different reference number)" and names the stored transaction it looks like. Each stored transaction is named for at most one row. A few of these are normal, like two tolls a day apart, and they start ticked. When they're more than half of the file's new rows, the bank has probably renumbered transactions you already have, so they start unticked and the preview says why. Tick only the ones that are really new.
-- A row that looks like a stored transaction with no reference number, which means one from the bank through Plaid, is listed as "Looks like one already here" and left out unless you tick it. Without Plaid that can't happen: every stored transaction comes from a CSV and has a reference number.
+- Importing the same file again, or a file that overlaps an earlier one, skips every row whose reference number (or key) is already stored. Those rows show as "Already imported".
+- **Possible duplicates.** A row with a new reference number that otherwise looks like a stored transaction (the same card and amount, posted within 3 days, and a similar merchant) is still a new transaction, because the issuer numbered it differently. The preview marks it "Possible duplicate (different reference number)" and names the stored transaction it looks like. Each stored transaction is named for at most one row. A few of these are normal, like two tolls a day apart, and they start ticked. When they're more than half of the file's new rows, the bank has probably renumbered transactions you already have, so they start unticked and the preview says why. Tick only the ones that are really new.
+- A row that looks like a stored transaction with no reference number, which means one from the bank through Plaid, is listed as "Looks like one already here" and left out unless you tick it. Without Plaid that happens only between a file with reference numbers and one without them, since a key isn't the issuer's number.
 - **Undoing an import.** In **Spend → Settings → Cards**, press **Imports** on the card to see its recent imports, and **Undo this import** on one. It asks first, then deletes that import's transactions, so the right file can be imported again. It's refused if any of them has a category, person, or note set by hand, and says how many: undo those changes first. Rows a bank transaction already replaced aren't deleted or counted: they stay hidden, so importing the file again still skips them.
 - Rules are applied to imported rows. The dashboard starts with one rule that puts credits whose payee contains `PAYMENT` in **Payments and transfers**, so card payments don't count as refunds. Bank of America's exact wording for payments isn't verified; change the rule if it doesn't catch yours.
-- A preview lasts an hour and is never the file itself, only the rows read from it. Nothing from the file is written to the logs.
+- A preview lasts an hour. It keeps the table's cells (for the columns step and **Change the columns**) and the rows read from it, and only the mapped fields go into transactions. It's deleted at Import, Cancel, or expiry, with SQLite's `secure_delete` on, and backups are taken without it. Nothing from the file is written to the logs.
 - Give each card its usual closing day, or the drill-down groups spending by calendar month. Closing dates for past statements can be added by hand in **Closing dates**, if the bank's differ.
 
 ## Backups
@@ -304,6 +312,14 @@ Details:
 - The app writes a nightly copy to `DATA_DIR/backups/dashboard-YYYY-MM-DD.db` and keeps 14.
 - Copy that folder off the server.
 - Backups contain your data unencrypted, card transactions included, so store them somewhere private.
+- Backups never hold CSV import drafts (a file's every column, kept for up to an hour while an admin imports it). Each copy has them deleted and is vacuumed before it counts, and a copy that can't be scrubbed is deleted.
+- **Before a deploy,** take a manual backup the same way, inside the container:
+
+  ```bash
+  sudo docker compose exec -T dashboard node dist/server/db/backupNow.js /data/dashboard.db /data/backups/pre-<what>-$(date +%F).db
+  ```
+
+  It prints the backup's path. It replaces the older one-liner (`new D('/data/dashboard.db', { readonly: true }); db.backup(…)`) in the phase plans, which copies the drafts too.
 - **Restoring a backup means everyone reconnects Todoist.** Todoist's refresh tokens change every hour or so, and a backup holds old ones that Todoist no longer accepts. After a restore, each linked person sees a Reconnect prompt.
 - A restore brings back the Google Calendar link as it was when the backup was taken. Whether it still works depends on Google still accepting that refresh token, which I haven't verified: if the calendar was disconnected since, its token was revoked, and if it was reconnected since, Google may have replaced the token. If it no longer works, the Integrations section says it needs reconnecting, and an admin connects it again.
 - Backups hold the calendar's last fetched events (`calendar_cache`), as well as everything else.

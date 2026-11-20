@@ -6,7 +6,7 @@ import { savingsAccounts, savingsBalances, savingsFlows, savingsImportPreviews, 
 import { BANK_FILE, BROKERAGE_FILE, bytes, CASH_FILE, CASH_HEADER, CASH_SAMPLE, cashLine, fidelityFile } from '../../test/importCsv.js';
 import { addUser, makeTestApp, type TestApp } from '../../test/helpers.js';
 import { addHandAccount, addSavingsAccount, addSavingsItem } from '../../test/savingsFixtures.js';
-import { CSV_TABLE_MESSAGES } from './csvTable.js';
+import { CSV_TABLE_MESSAGES } from '../../csv/table.js';
 import { BUILT_IN_FORMATS } from './importFormats.js';
 import {
   cancelSavingsImport, clearImportProfile, commitSavingsImport, importProfilesOf, listSavingsImports, pruneSavingsImportPreviews, startSavingsImport,

@@ -1,14 +1,14 @@
 import Database from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
 import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
-import { cpSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { openDb } from './index.js';
+import { checkpointWal, openDb } from './index.js';
 import { asc, eq } from 'drizzle-orm';
 import {
-  cards, categories, categoryMappings, connections, plaidItems, plaidLinkPending, rules, savingsAccounts, savingsBalances, savingsFlows, savingsImportPreviews, savingsImportProfiles, savingsImports, transactions, users,
+  cards, categories, categoryMappings, connections, plaidItems, plaidLinkPending, rules, savingsAccounts, savingsBalances, savingsFlows, savingsImportPreviews, savingsImportProfiles, savingsImports, spendImportProfiles, transactions, users,
 } from './schema.js';
 
 /** The migrations that came after production data existed (phase 4 on). */
@@ -87,10 +87,28 @@ describe('openDb', () => {
         'chores', 'connections', 'csv_import_previews', 'csv_imports', 'job_errors', 'panel_grants', 'pending_revocations', 'plaid_items',
         'plaid_link_pending', 'rules', 'sessions', 'settings', 'statements', 'todoist_state', 'todos', 'transactions', 'user_prefs', 'users',
         'savings_accounts', 'savings_balances', 'savings_flows', 'savings_import_previews', 'savings_import_profiles', 'savings_imports',
+        'spend_import_profiles',
       ]),
     );
     expect(sqlite.pragma('foreign_keys', { simple: true })).toBe(1);
     expect(db.select().from(users).all()).toEqual([]);
+  });
+
+  it('zeroes deleted cells (secure_delete), so a deleted import draft leaves no copy in the database file', () => {
+    const { sqlite } = openDb(':memory:');
+    expect(sqlite.pragma('secure_delete', { simple: true })).toBe(1);
+    sqlite.close();
+  });
+
+  it('empties the WAL file on a checkpoint, so old frames holding deleted rows are gone', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'fd-wal-'));
+    const { sqlite } = openDb(join(dir, 'dashboard.db'));
+    expect(sqlite.pragma('journal_mode', { simple: true })).toBe('wal');
+    sqlite.exec("create table scratch (v text); insert into scratch values ('x'); delete from scratch;");
+    expect(statSync(join(dir, 'dashboard.db-wal')).size).toBeGreaterThan(0);
+    checkpointWal(sqlite);
+    expect(statSync(join(dir, 'dashboard.db-wal')).size).toBe(0);
+    sqlite.close();
   });
 
   it('has a migration guard that refuses what could change or lose rows already there', () => {
@@ -260,6 +278,7 @@ describe('the Spend tables (phase 6a)', () => {
       // 0011 (Savings).
       'savings_accounts', 'savings_balances', 'savings_flows',
       'savings_import_previews', 'savings_import_profiles', 'savings_imports', // 0012 (Savings CSV import).
+      'spend_import_profiles', // 0015 (generic card CSV import).
       'statements', 'transactions',
     ]);
     expect(sqlite.pragma('foreign_key_check')).toEqual([]);
@@ -409,7 +428,7 @@ describe('the Plaid tables and columns (phase 6b)', () => {
 
     migrate(drizzle(sqlite), { migrationsFolder: 'drizzle' });
 
-    expect(tables(sqlite).filter((t) => !phase6a.includes(t))).toEqual(['plaid_link_pending', 'savings_accounts', 'savings_balances', 'savings_flows', 'savings_import_previews', 'savings_import_profiles', 'savings_imports']);
+    expect(tables(sqlite).filter((t) => !phase6a.includes(t))).toEqual(['plaid_link_pending', 'savings_accounts', 'savings_balances', 'savings_flows', 'savings_import_previews', 'savings_import_profiles', 'savings_imports', 'spend_import_profiles']);
     const added: Record<string, Record<string, string | null>> = {
       plaid_items: {
         accounts: null, picked_at: null, backoff_until: null, new_accounts_at: null, disconnect_at: null, transactions_status: null,
@@ -419,6 +438,8 @@ describe('the Plaid tables and columns (phase 6b)', () => {
       },
       // 0010 (Remove duplicate) adds three more, all nullable.
       transactions: { replaced_by_id: null, deleted_reason: null, duplicate_of_id: null, duplicate_carry: null },
+      // 0015 (generic card CSV import): the format an import was read with; null reads as Bank of America's.
+      csv_imports: { format: null },
     };
     for (const n of names) {
       expect(columns(sqlite, n).filter((c) => !columnsBefore[n]!.includes(c)), n).toEqual(Object.keys(added[n] ?? {}));
@@ -507,7 +528,7 @@ describe('the Savings tables and columns (0011)', () => {
 
     migrate(drizzle(sqlite), { migrationsFolder: 'drizzle' });
 
-    expect(tables(sqlite).filter((t) => !before6b.includes(t))).toEqual(['savings_accounts', 'savings_balances', 'savings_flows', 'savings_import_previews', 'savings_import_profiles', 'savings_imports']);
+    expect(tables(sqlite).filter((t) => !before6b.includes(t))).toEqual(['savings_accounts', 'savings_balances', 'savings_flows', 'savings_import_previews', 'savings_import_profiles', 'savings_imports', 'spend_import_profiles']);
     const added: Record<string, Record<string, string | null>> = {
       plaid_items: { purpose: 'spend', investments_status: null, investments_error_code: null, investments_through: null },
       plaid_link_pending: { purpose: 'spend' },
@@ -702,6 +723,45 @@ describe("the Savings imports' date range (0014)", () => {
     sqlite.prepare("update savings_imports set first_date = '2026-10-01', last_date = '2026-10-31' where id = 1").run();
     expect(sqlite.prepare('select first_date, last_date from savings_imports').get()).toEqual({ first_date: '2026-10-01', last_date: '2026-10-31' });
     expect(sqlite.pragma('foreign_key_check')).toEqual([]);
+  });
+});
+
+describe('the Spend import profiles and formats (0015)', () => {
+  it('adds a nullable format to the imports and a plan to the previews already there, keeping every row', () => {
+    const sqlite = new Database(':memory:');
+    sqlite.pragma('foreign_keys = ON');
+    migrate(drizzle(sqlite), { migrationsFolder: migrationsUpTo(14) });
+    sqlite.exec(`
+      insert into users (id, email, display_name, color, role, active, created_at) values (1, 'alex@example.com', 'Alex', '#378ADD', 'admin', 1, 1);
+      insert into cards (id, nickname, included, created_at, updated_at) values (1, 'Visa', 1, 1, 1);
+      insert into csv_imports (id, card_id, file_name, file_sha256, uploaded_by_user_id, uploaded_at, row_count, imported_count, skipped_count)
+        values (1, 1, 'currentTransaction_1234.csv', '${'0'.repeat(64)}', 1, 5, 3, 2, 1);
+      insert into csv_import_previews (id, user_id, card_id, file_name, file_sha256, rows, created_at, expires_at)
+        values ('preview-synthetic', 1, 1, null, '${'0'.repeat(64)}', '[]', 5, 6);
+    `);
+    const imports = sqlite.prepare('select * from csv_imports').all();
+    const previews = sqlite.prepare('select * from csv_import_previews').all();
+    migrate(drizzle(sqlite), { migrationsFolder: 'drizzle' });
+    expect(sqlite.prepare('select * from csv_imports').all()).toEqual(imports.map((r) => ({ ...(r as object), format: null })));
+    expect(sqlite.prepare('select * from csv_import_previews').all()).toEqual(previews.map((r) => ({ ...(r as object), plan: null })));
+    expect(sqlite.pragma('foreign_key_check')).toEqual([]);
+  });
+
+  it('keeps one saved mapping per card, gone with the card', () => {
+    const { db } = openDb(':memory:');
+    const NOW = new Date('2026-11-15T12:00:00Z');
+    const user = db.insert(users).values({ email: 'alex@example.com', displayName: 'Alex', color: '#378ADD', role: 'admin', createdAt: NOW }).returning().get();
+    const card = db.insert(cards).values({ nickname: 'Other issuer', createdAt: NOW, updatedAt: NOW }).returning().get();
+    const profile = {
+      cardId: card.id, header: ['Transaction Date', 'Description', 'Debit', 'Credit'],
+      mapping: { date: { column: 0, format: 'dmy' as const }, amount: { kind: 'split' as const, charges: 2, credits: 3 }, description: 1, reference: null, address: null },
+      updatedByUserId: user.id, createdAt: NOW, updatedAt: NOW,
+    };
+    db.insert(spendImportProfiles).values(profile).run();
+    expect(() => db.insert(spendImportProfiles).values(profile).run()).toThrow(/UNIQUE/);
+    expect(db.select().from(spendImportProfiles).get()).toMatchObject({ header: profile.header, mapping: profile.mapping });
+    db.delete(cards).where(eq(cards.id, card.id)).run();
+    expect(db.select().from(spendImportProfiles).all()).toEqual([]);
   });
 });
 

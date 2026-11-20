@@ -137,6 +137,27 @@ function syntheticCsv(stamp: string) {
   return { name: 'currentTransaction_1234.csv', buffer: Buffer.from(`${text}\r\n`, 'utf8'), merchants: m };
 }
 
+/**
+ * A SYNTHETIC export from a card issuer other than Bank of America: Transaction Date, Description,
+ * Category, Debit, Credit, with D/M/YYYY dates and no reference numbers. Not a real export: the
+ * merchants carry the test's stamp, and every day is 12 or under, so the date format is the admin's
+ * to choose. Fixed days in October 2026 (a past cycle); `days` picks which, and the 3rd has two
+ * identical coffees.
+ */
+function debitCreditCsv(stamp: string, name: string, days: readonly number[]) {
+  const rows: Record<number, string[]> = {
+    1: [`01/10/2026,CORNER CAFE ${stamp},Dining,4.50,`],
+    2: [`02/10/2026,BOOK NOOK ${stamp},Shopping,"1,024.99",`],
+    3: [`03/10/2026,CORNER CAFE ${stamp},Dining,4.50,`, `03/10/2026,CORNER CAFE ${stamp},Dining,4.50,`],
+    5: [`05/10/2026,ONLINE PAYMENT ${stamp},Payment,,500.00`],
+    6: [`06/10/2026,HARDWARE BARN ${stamp},Home,,12.00`],
+    8: [`08/10/2026,GROCER ${stamp},Groceries,63.20,`],
+    9: [`09/10/2026,FUEL STOP ${stamp},Travel,40.00,`],
+  };
+  const text = ['Transaction Date,Description,Category,Debit,Credit', ...days.flatMap((d) => rows[d]!)].join('\r\n');
+  return { name, buffer: Buffer.from(`${text}\r\n`, 'utf8') };
+}
+
 /** As the signed-in admin: a card through the API, and the synthetic CSV imported into it. */
 async function cardWithTransactions(page: Page, stamp: string) {
   const created = await page.request.post('/api/panels/spend/cards', {
@@ -212,9 +233,12 @@ for (const sized of SIZES) {
       // Preview: 7 rows, 5 days of dates, and the temporary credit that can't be imported yet.
       const importer = page.getByRole('region', { name: 'Import a CSV' });
       await importer.getByLabel('Card').selectOption({ label: `${nickname} ·1234` });
-      await importer.getByLabel('Bank of America CSV').setInputFiles({ name: csv.name, mimeType: 'text/csv', buffer: csv.buffer });
+      await importer.getByLabel('CSV file').setInputFiles({ name: csv.name, mimeType: 'text/csv', buffer: csv.buffer });
       await importer.getByRole('button', { name: 'Preview' }).click();
       await expect(importer.getByRole('heading', { name: `${csv.name} for ${nickname} ·1234` })).toBeFocused();
+      // Bank of America's built-in format: no columns step.
+      await expect(importer.getByText("This is a Bank of America credit card file, so it's read the way Bank of America writes it.")).toBeVisible();
+      await expect(importer.getByRole('form', { name: 'Columns of the file' })).toHaveCount(0);
       await expect(importer.getByText(`7 rows, ${longDay(localDay(-36))} to ${longDay(localDay(-1))}. 1 can't be imported.`)).toBeVisible();
       const rows = importer.getByRole('group', { name: 'Rows to import' });
       await expect(rows.getByRole('checkbox')).toHaveCount(6);
@@ -246,8 +270,9 @@ for (const sized of SIZES) {
       // The same file again: every row is already imported, so nothing can be.
       await page.goto('/spend?tab=settings');
       await importer.getByLabel('Card').selectOption({ label: `${nickname} ·1234` });
-      await importer.getByLabel('Bank of America CSV').setInputFiles({ name: csv.name, mimeType: 'text/csv', buffer: csv.buffer });
+      await importer.getByLabel('CSV file').setInputFiles({ name: csv.name, mimeType: 'text/csv', buffer: csv.buffer });
       await importer.getByRole('button', { name: 'Preview' }).click();
+      await expect(importer.getByText("Read with this card's saved columns. If something looks wrong, change the columns.")).toBeVisible();
       await expect(importer.getByText("7 rows. 7 can't be imported.")).toBeVisible();
       await expect(importer.getByRole('region', { name: "Rows that can't be imported" }).getByText(/Already imported/)).toHaveCount(6);
       await expect(importer.getByRole('button', { name: 'Import 0 rows' })).toBeDisabled();
@@ -260,6 +285,78 @@ for (const sized of SIZES) {
       await noSidewaysScroll(page);
       await page.goto(`/spend?card=${card.id}`);
       await expect(totals.getByText('$1,237.79')).toBeVisible();
+      await noSidewaysScroll(page);
+    });
+
+    test("imports another issuer's Debit and Credit file through the columns step, saves its columns, and an overlapping file adds only new rows", async ({ page }, info) => {
+      const stamp = newStamp(info);
+      await signInAsNewAdmin(page, stamp);
+      const nickname = `Card ${stamp}`;
+      const created = await page.request.post('/api/panels/spend/cards', { data: { nickname, mask: '', included: true, usualClosingDay: closingDay() }, headers: MUTATION_HEADERS });
+      expect(created.status()).toBe(201);
+      const first = debitCreditCsv(stamp, 'activity-october.csv', [1, 2, 3, 5, 6]);
+      await page.goto('/spend?tab=settings');
+      const importer = page.getByRole('region', { name: 'Import a CSV' });
+      await importer.getByLabel('Card').selectOption({ label: nickname });
+      await importer.getByLabel('CSV file').setInputFiles({ name: first.name, mimeType: 'text/csv', buffer: first.buffer });
+      await importer.getByRole('button', { name: 'Preview' }).click();
+
+      // The columns: a guess from their names, the first rows, and a date format to choose.
+      await expect(importer.getByRole('heading', { name: `${first.name} for ${nickname}: the columns` })).toBeFocused();
+      await expect(importer.getByText('The columns are a guess from their names. Check each one.')).toBeVisible();
+      await expect(importer.getByRole('region', { name: "The file's first 6 rows" })).toContainText(`BOOK NOOK ${stamp}`);
+      const columns = importer.getByRole('form', { name: 'Columns of the file' });
+      await expect(columns.getByLabel('Date column')).toHaveValue('0');
+      await expect(columns.getByLabel('Date format')).toHaveValue('');
+      await expect(columns.getByText('Every day in this column is 12 or under, so its dates could be month first or day first. Choose which.')).toBeVisible();
+      await expect(columns.getByRole('radio', { name: 'Separate columns for charges and for payments and credits' })).toBeChecked();
+      await expect(columns.getByLabel('Charges column')).toHaveValue('3');
+      await expect(columns.getByLabel('Payments and credits column')).toHaveValue('4');
+      await expect(columns.getByLabel('Description or payee column')).toHaveValue('1');
+      await expect(columns.getByLabel('Reference number column')).toHaveValue('');
+      // Without a format nothing is sent.
+      await columns.getByRole('button', { name: 'Preview' }).click();
+      await expect(columns.getByRole('alert')).toHaveText('Choose the date column and how its dates are written.');
+      await columns.getByLabel('Date format').selectOption({ label: 'D/M/YYYY' });
+      await columns.getByRole('button', { name: 'Preview' }).click();
+
+      // The preview, as for any file. No reference number or key is shown.
+      await expect(importer.getByRole('heading', { name: `${first.name} for ${nickname}` })).toBeFocused();
+      await expect(importer.getByText(`6 rows, ${longDay(new Date(2026, 9, 1, 12))} to ${longDay(new Date(2026, 9, 6, 12))}.`)).toBeVisible();
+      await expect(importer.getByText(/k1:/)).toHaveCount(0);
+      await expect(importer.getByRole('group', { name: 'Rows to import' }).getByRole('checkbox', { checked: true })).toHaveCount(6);
+      await importer.getByRole('button', { name: 'Import 6 rows' }).click();
+      await expect(importer.getByRole('status')).toHaveText('Imported 6 rows. 0 skipped.');
+
+      // The card's Imports area shows the saved columns.
+      const cards = page.getByRole('region', { name: 'Cards' });
+      const toggle = cards.getByRole('button', { name: `Imports for ${nickname}` });
+      await toggle.click();
+      const saved = cards.getByRole('region', { name: `Saved columns for ${nickname}` });
+      await expect(saved).toContainText('Date: Transaction Date, written D/M/YYYY');
+      await expect(saved).toContainText('Amount: Debit for charges, Credit for payments and credits');
+      await expect(saved).toContainText('Reference number: none, so each row gets a key from its date, amount, and description');
+      await expect(cards.getByRole('region', { name: `Imports for ${nickname}` })).toContainText('custom columns');
+
+      // An overlapping file goes straight to the preview, and only its new rows can be imported.
+      const second = debitCreditCsv(stamp, 'activity-later.csv', [3, 5, 6, 8, 9]);
+      await importer.getByLabel('Card').selectOption({ label: nickname });
+      await importer.getByLabel('CSV file').setInputFiles({ name: second.name, mimeType: 'text/csv', buffer: second.buffer });
+      await importer.getByRole('button', { name: 'Preview' }).click();
+      await expect(importer.getByRole('heading', { name: `${second.name} for ${nickname}` })).toBeFocused();
+      await expect(importer.getByText("Read with this card's saved columns. If something looks wrong, change the columns.")).toBeVisible();
+      await expect(importer.getByText(/^6 rows, .* 4 can't be imported\.$/)).toBeVisible();
+      await expect(importer.getByRole('region', { name: "Rows that can't be imported" }).getByText(/Already imported/)).toHaveCount(4);
+      await importer.getByRole('button', { name: 'Import 2 rows' }).click();
+      await expect(importer.getByRole('status')).toHaveText('Imported 2 rows. 4 skipped.');
+      await expect(cards.getByRole('listitem').filter({ hasText: nickname }).first()).toContainText('8 transactions');
+
+      // Clear saved columns, and focus goes back to the card's Imports button.
+      if (!(await saved.isVisible())) await toggle.click();
+      await saved.getByRole('button', { name: 'Clear saved columns' }).click();
+      await expect(cards.getByRole('status')).toHaveText(`Cleared the saved columns for ${nickname}.`);
+      await expect(cards.getByRole('region', { name: `Imports for ${nickname}` })).toContainText('No saved columns.');
+      await expect(toggle).toBeFocused();
       await noSidewaysScroll(page);
     });
 
@@ -477,7 +574,7 @@ for (const sized of SIZES) {
       await expect(page.getByRole('region', { name: 'Spend' }).getByRole('listitem').filter({ hasText: `Visa ${stamp}` })).toContainText(onTrack);
     });
 
-    test("members don't get Spend settings; the checking export is refused; categories move from the keyboard", async ({ page }, info) => {
+    test("members don't get Spend settings; the checking export is pointed to Savings; categories move from the keyboard", async ({ page }, info) => {
       const stamp = newStamp(info);
       const admin = await signInAsNewAdmin(page, stamp);
       const member = await createMember(page, stamp, ['spend']);
@@ -499,9 +596,15 @@ for (const sized of SIZES) {
       const importer = page.getByRole('region', { name: 'Import a CSV' });
       await importer.getByLabel('Card').selectOption({ label: `Amex ${stamp}` });
       const checking = 'Description,,Summary Amt.\r\nBeginning balance as of 10/01/2026,,"1,000.00"\r\n\r\nDate,Description,Amount,Running Bal.\r\n';
-      await importer.getByLabel('Bank of America CSV').setInputFiles({ name: 'stmt.csv', mimeType: 'text/csv', buffer: Buffer.from(checking) });
+      await importer.getByLabel('CSV file').setInputFiles({ name: 'stmt.csv', mimeType: 'text/csv', buffer: Buffer.from(checking) });
       await importer.getByRole('button', { name: 'Preview' }).click();
-      await expect(importer.getByRole('alert')).toHaveText('This is a Bank of America checking or savings export. Only credit-card activity can be imported.');
+      // Not refused by name any more: it opens the columns step, which says checking and savings go in Savings.
+      await expect(importer.getByRole('heading', { name: `stmt.csv for Amex ${stamp}: the columns` })).toBeFocused();
+      await expect(importer.getByText('This looks like a Bank of America checking or savings export. Card activity is imported here; checking and savings go in Savings.')).toBeVisible();
+      // Its second header, after the blank line, is a footer as far as this table goes: counted, never shown.
+      await expect(importer.getByText('1 line after the table was skipped, as a footer.')).toBeVisible();
+      await importer.getByRole('button', { name: 'Cancel' }).click();
+      await expect(importer.getByRole('status')).toHaveText('Import cancelled. Nothing was saved.');
 
       // A new category goes last; Move up moves it, and focus stays on the button.
       const categories = page.getByRole('region', { name: 'Categories', exact: true });
@@ -1054,14 +1157,14 @@ for (const sized of SIZES) {
       await page.goto('/spend?tab=settings');
       const importer = page.getByRole('region', { name: 'Import a CSV' });
       await importer.getByLabel('Card').selectOption({ label: `${nickname} ·1234` });
-      await importer.getByLabel('Bank of America CSV').setInputFiles({ name: 'big.csv', mimeType: 'text/csv', buffer: Buffer.alloc(5 * 1024 * 1024 + 1, 'a') });
+      await importer.getByLabel('CSV file').setInputFiles({ name: 'big.csv', mimeType: 'text/csv', buffer: Buffer.alloc(5 * 1024 * 1024 + 1, 'a') });
       await importer.getByRole('button', { name: 'Preview' }).click();
       await expect(importer.getByRole('alert')).toHaveText('That file is too big. The limit is 5 MB.');
       expect(uploads).toHaveLength(0);
 
       // The preview has expired by the time Import is pressed.
       const csv = syntheticCsv(stamp);
-      await importer.getByLabel('Bank of America CSV').setInputFiles({ name: csv.name, mimeType: 'text/csv', buffer: csv.buffer });
+      await importer.getByLabel('CSV file').setInputFiles({ name: csv.name, mimeType: 'text/csv', buffer: csv.buffer });
       await importer.getByRole('button', { name: 'Preview' }).click();
       await expect(importer.getByRole('heading', { name: `${csv.name} for ${nickname} ·1234` })).toBeFocused();
       await page.route('**/api/panels/spend/imports/*/commit', (route) =>
@@ -1071,7 +1174,7 @@ for (const sized of SIZES) {
       await expect(importer.getByRole('alert')).toHaveText('That preview has expired. Upload the file again.');
       await expect(importer.getByRole('heading', { name: 'Import a CSV' })).toBeFocused();
       // The file field is empty again, and nothing is uploaded from it.
-      await expect(importer.getByLabel('Bank of America CSV')).toHaveValue('');
+      await expect(importer.getByLabel('CSV file')).toHaveValue('');
       await importer.getByRole('button', { name: 'Preview' }).click();
       await expect(importer.getByRole('alert')).toHaveText('Pick a card and a file first.');
       expect(uploads).toHaveLength(1);
@@ -1096,9 +1199,11 @@ for (const sized of SIZES) {
       await toggle.click();
       await expect(toggle).toHaveAttribute('aria-expanded', 'true');
       const imports = cards.getByRole('region', { name: `Imports for ${card.nickname}` });
-      await expect(imports.getByRole('listitem')).toHaveCount(1);
-      await expect(imports.getByRole('listitem')).toContainText(csv.name);
-      await expect(imports.getByRole('listitem')).toContainText('6 transactions');
+      // The imports themselves, not the saved columns' lines below them.
+      const importRows = imports.getByRole('list').first().getByRole('listitem');
+      await expect(importRows).toHaveCount(1);
+      await expect(importRows).toContainText(csv.name);
+      await expect(importRows).toContainText('6 transactions');
       const undo = imports.getByRole('button', { name: new RegExp(`^Undo the import of ${csv.name.replace('.', '\\.')}`) });
 
       // It asks first; saying no sends nothing.
@@ -1137,14 +1242,14 @@ for (const sized of SIZES) {
       // The same file imports again: none of it is "already imported".
       const importer = page.getByRole('region', { name: 'Import a CSV' });
       await importer.getByLabel('Card').selectOption({ label: `${card.nickname} ·1234` });
-      await importer.getByLabel('Bank of America CSV').setInputFiles({ name: csv.name, mimeType: 'text/csv', buffer: csv.buffer });
+      await importer.getByLabel('CSV file').setInputFiles({ name: csv.name, mimeType: 'text/csv', buffer: csv.buffer });
       await importer.getByRole('button', { name: 'Preview' }).click();
       await expect(importer.getByText(/^7 rows, .* 1 can't be imported\.$/)).toBeVisible();
       await expect(importer.getByRole('group', { name: 'Rows to import' }).getByRole('checkbox', { checked: true })).toHaveCount(6);
       await importer.getByRole('button', { name: 'Import 6 rows' }).click();
       await expect(importer.getByRole('status')).toHaveText('Imported 6 rows. 1 skipped.');
       await expect(row).toContainText('6 transactions');
-      await expect(imports.getByRole('listitem')).toHaveCount(1);
+      await expect(importRows).toHaveCount(1);
       await noSidewaysScroll(page);
     });
 
@@ -1212,7 +1317,7 @@ for (const sized of SIZES) {
       // A slow preview: the same.
       const csv = syntheticCsv(stamp);
       await importer.getByLabel('Card').selectOption({ label: `${nickname} ·4321` });
-      await importer.getByLabel('Bank of America CSV').setInputFiles({ name: csv.name, mimeType: 'text/csv', buffer: csv.buffer });
+      await importer.getByLabel('CSV file').setInputFiles({ name: csv.name, mimeType: 'text/csv', buffer: csv.buffer });
       const upload = await holdRequests(page, '**/api/panels/spend/imports', 'POST');
       await importer.getByRole('button', { name: 'Preview' }).click();
       await expect.poll(() => upload.held()).toBe(1);

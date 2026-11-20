@@ -1,7 +1,7 @@
 import { useIsMutating, useMutation, useMutationState, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import type { RowDraft } from './drafts.js';
 import {
-  SPEND_MESSAGES, type Card, type CardStatements, type Category, type CsvImportRecord, type DuplicateRemoval, type DuplicateRestore, type ImportPreview, type Rule,
+  SPEND_MESSAGES, type Card, type CardMapping, type CardStatements, type Category, type CsvImportRecord, type DuplicateRemoval, type DuplicateRestore, type ImportPreview, type ImportProfileResponse, type Rule,
   type SpendOverview, type SpendPerson, type SpendSummary, type SpendTransaction, type TransactionBatchChange, type TransactionPatch,
 } from '../../../shared/spend.js';
 import { api, apiUpload } from '../../api.js';
@@ -12,6 +12,7 @@ const BASE = '/api/panels/spend';
 export const spendKeys = {
   all: ['spend'] as const,
   summary: ['spend', 'summary'] as const,
+  importProfile: (cardId: number) => ['spend', 'importProfile', cardId] as const,
   overview: (card: number | null, cycle: string | null) => ['spend', 'overview', card, cycle] as const,
   categories: ['spend', 'categories'] as const,
   people: ['spend', 'people'] as const,
@@ -261,4 +262,25 @@ export function useCsvUpload(handlers: { onError?: (err: Error, from: Element | 
     onSuccess: (preview, v) => handlers.onSuccess?.(preview, v.from),
   });
   return { ...mutation, mutate: (v: { cardId: number; file: File }) => mutation.mutate({ ...v, from: document.activeElement }) };
+}
+
+/** A card's saved columns, for its Imports area (admins). */
+export function useCardImportProfile(cardId: number) {
+  return useQuery({ queryKey: spendKeys.importProfile(cardId), queryFn: () => api<ImportProfileResponse>(`${BASE}/cards/${cardId}/import-profile`) });
+}
+
+/**
+ * The columns step's Preview: PUT /imports/:id with the mapping (the generic import design). Like
+ * the upload it saves nothing, so it's outside the write key. Both handlers get the element that had
+ * focus when it was sent.
+ */
+export function useUpdateCsvImport(handlers: { onError?: (err: Error, from: Element | null) => void; onSuccess?: (preview: ImportPreview, from: Element | null) => void } = {}) {
+  const mutation = useMutation({
+    mutationKey: uploadKey,
+    mutationFn: ({ id, mapping }: { id: string; mapping: CardMapping; from: Element | null }) =>
+      api<ImportPreview>(`${BASE}/imports/${encodeURIComponent(id)}`, { method: 'PUT', body: { mapping } }),
+    onError: (err, v) => handlers.onError?.(err, v.from),
+    onSuccess: (preview, v) => handlers.onSuccess?.(preview, v.from),
+  });
+  return { ...mutation, mutate: (v: { id: string; mapping: CardMapping }) => mutation.mutate({ ...v, from: document.activeElement }) };
 }

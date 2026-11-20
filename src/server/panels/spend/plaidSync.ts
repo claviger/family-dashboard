@@ -13,7 +13,7 @@ import {
   type PlaidCreditLiability, type TransactionsSyncPage,
 } from '../../integrations/plaid/client.js';
 import { RECONNECT_ERRORS, type Plaid, type PlaidSession } from '../../integrations/plaid/plaid.js';
-import { EARLIEST_DATE } from './bofa.js';
+import { EARLIEST_DATE } from './cardCsv.js';
 import { INFERRED_MIN_GAP_DAYS } from './cycles.js';
 import { addSyncCounts, applySyncRun, attachedAccounts, type SyncApplyCounts } from './plaidApply.js';
 

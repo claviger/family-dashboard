@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { SAVINGS_MESSAGES, type SavingsMapping } from '../../../shared/savings.js';
 import { BANK_FILE, BROKERAGE_FILE, CASH_FILE, FIDELITY_RULE_ACTIONS } from '../../test/importCsv.js';
-import { dateFormatsOf, guessMapping, parseDate, parseMoney, readMapped } from './csvMapping.js';
+import { guessMapping, readMapped } from './csvMapping.js';
+import { dateFormatsOf, parseDate, parseMoney } from '../../csv/values.js';
 import { groupLabel } from './csvRows.js';
-import { findCsvTable, type CsvTable } from './csvTable.js';
+import { findCsvTable, type CsvTable } from '../../csv/table.js';
 import { BUILT_IN_FORMATS, builtInFormatFor } from './importFormats.js';
 
 // Synthetic files (src/server/test/importCsv.ts). Today is 2026-11-15.

@@ -5,7 +5,7 @@ import { AppError } from '../../core/errors.js';
 import type { Db } from '../../db/index.js';
 import { cards, connections, csvImports, plaidItems, rules, statements, transactions, type CardRow, type ConnectionRow, type StatementRow } from '../../db/schema.js';
 import { isUniqueViolation } from '../todo/internalBackend.js';
-import { EARLIEST_DATE } from './bofa.js';
+import { EARLIEST_DATE } from './cardCsv.js';
 import { planCycles, type CyclePlan } from './cycles.js';
 import { cardOption, familyToday, requireCard, type SpendDeps } from './store.js';
 

@@ -1,8 +1,10 @@
+import { CSV_DATE_FORMAT_LABELS } from '../../../shared/csvImport.js';
 import { formatCents } from '../../../shared/money.js';
 import {
-  POSSIBLE_DUPLICATE, type CategoryKind, type CycleMode, type FieldSource, type PreviewRow, type SpendCycle, type SpendPerson, type SpendTransaction,
+  POSSIBLE_DUPLICATE, type CardMapping, type CategoryKind, type ImportColumns, type ImportPreview, type CycleMode, type FieldSource, type PreviewRow, type SpendCycle, type SpendPerson, type SpendTransaction,
 } from '../../../shared/spend.js';
 import { formatAgo } from '../../freshness.js';
+import { columnName } from '../savings/format.js';
 
 /**
  * Text for the Spend panel (spec §12.11, §12.12). Pure, so it's unit-tested and type-checked with
@@ -205,4 +207,33 @@ export function resettableFields(t: SpendTransaction): ('category' | 'person')[]
   if (t.categorySource === 'manual' || (t.categorySource !== 'default' && t.category.archived)) fields.push('category');
   if (t.personSource === 'manual' || (t.personSource !== 'default' && t.person !== null && !t.person.active)) fields.push('person');
   return fields;
+}
+
+/** A card's saved columns in words, one role a line, for its Imports area. */
+export function mappingLines(header: readonly string[], m: CardMapping): string[] {
+  const col = (c: number) => columnName(header, c);
+  return [
+    `Date: ${col(m.date.column)}, written ${CSV_DATE_FORMAT_LABELS[m.date.format]}`,
+    m.amount.kind === 'signed'
+      ? `Amount: ${col(m.amount.column)}, purchases ${m.amount.purchasesNegative ? 'negative' : 'positive'}`
+      : `Amount: ${col(m.amount.charges)} for charges, ${col(m.amount.credits)} for payments and credits`,
+    `Description: ${col(m.description)}`,
+    m.reference === null ? 'Reference number: none, so each row gets a key from its date, amount, and description' : `Reference number: ${col(m.reference)}`,
+    `Address: ${m.address === null ? 'none' : col(m.address)}`,
+  ];
+}
+
+/** Where the upload's answer filled the columns in from (shown only with that answer); null when saved columns didn't fit, whose message says so instead. */
+export function prefilledNote(p: Pick<ImportPreview, 'prefilled' | 'format' | 'columns'>): string | null {
+  if (p.columns.problem) return null;
+  if (p.prefilled === 'profile') return "Read with this card's saved columns. If something looks wrong, change the columns.";
+  if (p.prefilled === 'builtin' && p.format === 'bofa_credit') return "This is a Bank of America credit card file, so it's read the way Bank of America writes it.";
+  return p.columns.suggested ? 'The columns are a guess from their names. Check each one.' : null;
+}
+
+/** How many lines after the table were skipped as a footer (a count from the server, never their contents), or null for none. */
+export function skippedNote(c: Pick<ImportColumns, 'trailingSkipped'>): string | null {
+  const n = c.trailingSkipped;
+  if (n === 0) return null;
+  return `${n} ${n === 1 ? 'line after the table was' : 'lines after the table were'} skipped, as a footer.`;
 }
