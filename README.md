@@ -9,11 +9,23 @@ The full design lives in `docs/specs/2026-11-15-family-dashboard-design.md`. The
 - **Calendar.** Reads and edits one shared Google Calendar. The home card shows the next seven days; the drill-down has agenda, week, and month views, repeating events, and an event dialog. Changes from the dashboard never email guests.
 - **To-do.** A to-do list per person. Each person can link their own Todoist account, and then their Todoist Inbox is their list, kept in sync both ways.
 - **Chores.** A chore board: every household chore, how often it comes up, and who has it. Anyone can claim a chore, from the board or from someone else. A claimed chore goes on that person's to-do list, due the next time it comes up, and comes back on schedule after it's done. Unassigned chores are never late. Completion history with credit, late, and skipped counts.
-- **Spend.** Credit card spending by billing cycle, by category and by person, with donut charts and an "on track for" projection. Transactions come from Bank of America through Plaid and from CSV imports. Rules and bank categories file transactions automatically; you can sort the list, and remove duplicates with an undo.
-- **Savings.** Checking and brokerage accounts as summary numbers: each month's start, deposits, withdrawals, market change, and end, past months, a six-month graph of the total with deposit and withdrawal markers, and a one-month graph on the home card. Accounts come from Plaid (Fidelity, in my case), from any bank's CSV export through a column-mapping importer, or are added by hand with a balance you set. It stores balances and the dates and amounts of money moving in and out, never transactions, merchants, or holdings.
+- **Spend.** Credit card spending by billing cycle, by category and by person, with donut charts and an "on track for" projection. Transactions come from your card issuers through Plaid, and from CSV imports. Rules and bank categories file transactions automatically; you can sort the list, and remove duplicates with an undo.
+- **Savings.** Checking and brokerage accounts as summary numbers: each month's start, deposits, withdrawals, market change, and end, past months, a six-month graph of the total with deposit and withdrawal markers, and a one-month graph on the home card. Accounts come from your bank or brokerage through Plaid, from any institution's CSV export through a column-mapping importer, or are added by hand with a balance you set. It stores balances and the dates and amounts of money moving in and out, never transactions, merchants, or holdings.
 - **People and access.** Google sign-in. Only people an admin adds can sign in, and each person sees only the panels an admin turns on for them.
 
 It follows the system's light or dark setting, works by keyboard, and keeps touch targets at least 44 px.
+
+### What you can connect
+
+The money panels work with whatever financial institutions you use. Nothing is tied to a particular bank.
+
+| Kind of account | Panel | How it comes in |
+| --- | --- | --- |
+| Credit cards | Spend | Through [Plaid](https://plaid.com) from any card issuer Plaid supports, or from a CSV export (Bank of America's format is built in today) |
+| Checking, savings, and cash management accounts | Savings | Through Plaid from any bank Plaid supports, from any bank's CSV export, or added by hand |
+| Brokerage and other investment accounts | Savings | Through Plaid (with its Investments product) from any brokerage Plaid supports, from any brokerage's CSV export, or added by hand with balances you set |
+
+I run it with Bank of America credit cards and a Fidelity cash management account and brokerage, so those are the examples below. Plaid is optional: without it, Spend uses CSV imports and Savings uses CSV imports and hand-set balances.
 
 ## How it's built
 
@@ -51,20 +63,20 @@ It follows the system's light or dark setting, works by keyboard, and keeps touc
    - Subscribe the webhook to the `item:*` events: `item:added`, `item:updated`, `item:completed`, `item:uncompleted`, and `item:deleted`. Then **activate** the webhook.
    - Copy the app's client ID and client secret.
    - Todoist doesn't send webhooks for the account that owns the app until that account goes through the app's OAuth flow. So the owner links like everyone else, with **Settings → Connect Todoist**, never with a personal API token. Until then, the 10-minute sync still keeps them up to date.
-3. **Plaid** (optional; skip it and Spend gets its transactions from CSV imports only)
-   - Create a Plaid team and get it on the **Trial plan**. Plaid's docs say who the Trial is for, but not exactly how a team gets it (an application that Plaid approves, or an option when the team is created), so follow what the Plaid Dashboard offers. It's free for teams in the US or Canada created on or after April 15, 2026, and it runs in Plaid's **production** environment, with real bank data, for up to 10 bank connections (Plaid calls each bank login an Item). Removing a bank doesn't give its connection back. Spend settings counts the connections this server has made, but Plaid's Dashboard homepage has the real number.
+3. **Plaid** (optional; it connects your credit cards, bank accounts, and brokerage accounts. Skip it and Spend and Savings use CSV imports, plus hand-set balances in Savings)
+   - Create a Plaid team and get it on the **Trial plan**. Plaid's docs say who the Trial is for, but not exactly how a team gets it (an application that Plaid approves, or an option when the team is created), so follow what the Plaid Dashboard offers. It's free for teams in the US or Canada created on or after April 15, 2026, and it runs in Plaid's **production** environment, with real bank data, for up to 10 connections (Plaid calls each login at an institution an Item, whether it's a card issuer, a bank, or a brokerage). Removing a connection doesn't give it back. Spend settings counts the connections this server has made, but Plaid's Dashboard homepage has the real number.
    - Copy the team's client ID and its **production** secret. The client ID is the same in every environment, but each environment (Sandbox and production) has its own secret, so `PLAID_ENV` must match the secret you set. The app can't check that pair when it starts: with the wrong one, Plaid refuses every call, starting with **Connect bank**.
    - The secret goes in `PLAID_SECRET`. `PLAID_CLIENT_SECRET` isn't read: if it's set and `PLAID_SECRET` isn't, the app refuses to start and says to rename it.
-   - In the Dashboard's **Allowed redirect URIs**, add exactly `https://YOUR_HOST/connect/plaid/oauth-return`. Bank of America has you sign in on its own pages, and on a phone or in an in-app browser (a dashboard link opened from Mail, say) Link comes back to this page to finish.
-   - There's no webhook URL to set in the Dashboard. The app sends `https://YOUR_HOST/webhooks/plaid` with each link, and Plaid keeps it for that bank. So if you change `BASE_URL` later, update the redirect URI, then remove each bank and link it again, which uses another Trial connection each.
-   - Plaid's docs don't say that Bank of America works on the Trial. I'm inferring it from their general rule that Trial teams get OAuth banks without the paid plan's extra steps, so it's unverified until the first real link. If Bank of America isn't available in Link on the day the Trial starts, wait a day or two: Plaid says new Trial teams can take that long to get some banks.
-   - For the Savings panel (Fidelity): check that **Investments** is enabled for your team in Plaid's Dashboard (its Products page). On some plans you have to request it, and only the team's owner can see that page or ask. Without it, Savings still links, and the brokerage shows its total change only, with no deposits or withdrawals. After the Trial, Investments is a monthly subscription per connection, which Spend's cards never needed. See [Savings: connecting Fidelity](#savings-connecting-fidelity).
+   - In the Dashboard's **Allowed redirect URIs**, add exactly `https://YOUR_HOST/connect/plaid/oauth-return`. Many institutions (Bank of America and Fidelity among them) have you sign in on their own pages, and on a phone or in an in-app browser (a dashboard link opened from Mail, say) Link comes back to this page to finish.
+   - There's no webhook URL to set in the Dashboard. The app sends `https://YOUR_HOST/webhooks/plaid` with each link, and Plaid keeps it for that connection. So if you change `BASE_URL` later, update the redirect URI, then remove each connection and link it again, which uses another Trial connection each.
+   - Check that your institutions are available on your plan. Plaid's general rule is that Trial teams get institutions that use their own sign-in pages (OAuth) without the paid plan's extra steps; Bank of America and Fidelity both worked for me on the Trial. If one isn't in Link on the day the Trial starts, wait a day or two: Plaid says new Trial teams can take that long to get some institutions.
+   - For brokerage accounts in the Savings panel: check that **Investments** is enabled for your team in Plaid's Dashboard (its Products page). On some plans you have to request it, and only the team's owner can see that page or ask. Without it, Savings still links, and the brokerage shows its total change only, with no deposits or withdrawals. After the Trial, Investments is a monthly subscription per connection, which Spend's cards never needed. See [Savings: connecting a bank or brokerage](#savings-connecting-a-bank-or-brokerage).
 4. **Secrets**
    - Generate a session secret with `openssl rand -base64 32`.
    - Generate a token encryption key the same way: `openssl rand -base64 32`. It's required. The app encrypts the Google Calendar, Todoist, and Plaid tokens it stores with it. **Keep a copy outside the server**, for example in a password manager. It isn't in the database or the backups, which is the point.
    - If the app starts with a different key while it has tokens saved, it keeps running but turns Google Calendar, Todoist, and bank syncing off, and the System section of the Admin page says so. The calendar still shows the events it last fetched, and Spend still shows every transaction. Put the original key back and restart, and everything works as before.
    - If the original key is lost: set a new key, restart, and press **Reset links for a new key** in the System section. Google Calendar is disconnected, and everyone's to-dos stay on the dashboard. The old tokens are deleted, since they can't be read, so the app can't revoke them; each Google or Todoist account can remove the dashboard's access in its own settings. Then an admin connects Google Calendar again, and each person connects Todoist again from Settings. No other data is lost. If nothing was linked yet, the new key just works.
-   - With Plaid, the reset also disconnects every bank. Its cards and transactions stay, listed under **Removed banks** in Spend settings. The old connections stay active at Plaid until they expire, since their tokens can't be read to end them, so Spend settings and the System section show a notice for each one (and for any bank removal Plaid hadn't confirmed yet) saying to remove the dashboard at the bank or at my.plaid.com, until you dismiss it. Then connect each bank again, which uses another Trial connection each. Linking a bank again doesn't double its history (see [Spend: linking banks through Plaid](#spend-linking-banks-through-plaid)).
+   - With Plaid, the reset also disconnects every bank. Its cards and transactions stay, listed under **Removed banks** in Spend settings. The old connections stay active at Plaid until they expire, since their tokens can't be read to end them, so Spend settings and the System section show a notice for each one (and for any bank removal Plaid hadn't confirmed yet) saying to remove the dashboard at the bank or at my.plaid.com, until you dismiss it. Then connect each bank again, which uses another Trial connection each. Linking a bank again doesn't double its history (see [Spend: linking credit cards through Plaid](#spend-linking-credit-cards-through-plaid)).
 5. **Configure**
    - Copy `.env.example` to `.env` and fill in:
      - `BASE_URL=https://YOUR_HOST`
@@ -107,7 +119,7 @@ It follows the system's light or dark setting, works by keyboard, and keeps touc
      - This narrows what's stored and shown, not what the app can reach. Todoist has no Inbox-only permission, so the link's OAuth grant still covers the whole Todoist account, and syncs still receive tasks from every project; the server just doesn't keep or show them.
      - Moving a task out of the Inbox in Todoist takes it off the dashboard list. It isn't deleted, from Todoist or as a chore. Moving it back brings it back. Checking off a chore to-do in Todoist completes the chore, whatever project it's in.
      - Upgrading from a version that synced every project: each start removes other projects' tasks from the dashboard's copy (the first start after the upgrade is the one that finds any) and logs how many. Chore to-dos stay, and nothing changes in Todoist.
-   - For Spend, open **Spend → Settings**, add each credit card (a nickname, optionally its last 4, and the day its statements usually close), and import its activity. See [Spend: importing a Bank of America CSV](#spend-importing-a-bank-of-america-csv). With Plaid set up, connect the bank there too, and attach each of its cards to the card holding its CSV history. See [Spend: linking banks through Plaid](#spend-linking-banks-through-plaid).
+   - For Spend, open **Spend → Settings**, add each credit card (a nickname, optionally its last 4, and the day its statements usually close), and either import its activity or connect its issuer through Plaid. See [Spend: linking credit cards through Plaid](#spend-linking-credit-cards-through-plaid) and [Spend: importing a credit card CSV](#spend-importing-a-credit-card-csv). For checking, savings, and brokerage accounts, see [Savings: connecting a bank or brokerage](#savings-connecting-a-bank-or-brokerage).
 
 Only people an admin has added can sign in.
 
@@ -138,16 +150,16 @@ Set these in `.env` (Docker) or the systemd env file. An empty value counts as u
 | `GOOGLE_OAUTH_BASE_URL`, `GOOGLE_API_BASE_URL` | no | Google's own | For end-to-end tests only, to point the calendar link and the Calendar API at a fake Google. Same rule as above. Sign-in doesn't use them. |
 | `PLAID_API_BASE_URL`, `PLAID_LINK_SCRIPT_URL` | no | Plaid's own | For end-to-end tests only, to point the Plaid API and Link's script at a fake Plaid. Same rule as above. |
 
-## Spend: linking banks through Plaid
+## Spend: linking credit cards through Plaid
 
-With Plaid set up (see [Setting up your own instance](#setting-up-your-own-instance)), an admin links each bank login once, and its cards' transactions and statement dates then arrive on their own. I've linked Bank of America this way on the Trial plan and it syncs. Some of what's below still comes from Plaid's docs rather than experience. Plaid's own behavior that I relied on is in `docs/research/plaid-6b.md`.
+With Plaid set up (see [Setting up your own instance](#setting-up-your-own-instance)), an admin links each card issuer's login once (your bank, or whoever issues the card), and its cards' transactions and statement dates then arrive on their own. Any issuer Plaid supports works. I use Bank of America, so that's the example below, and it syncs on the Trial plan. Some of what's below still comes from Plaid's docs rather than experience. Plaid's own behavior that I relied on is in `docs/research/plaid-6b.md`.
 
-One thing I learned on the real link: Plaid built Bank of America's initial history in windows of about 99 days and kept only the newest 250 posted transactions in each, so a busy card's history had gaps. If yours does too, fill them with a CSV import (below) and use **Remove duplicate**, or sort by amount, to clean up any overlap.
+One thing I learned on a real link: Plaid built Bank of America's initial history in windows of about 99 days and kept only the newest 250 posted transactions in each, so a busy card's history had gaps. Other institutions may behave differently. If yours does too, fill them with a CSV import (below) and use **Remove duplicate**, or sort by amount, to clean up any overlap.
 
 **Connecting a bank and choosing cards**
 
 1. Open **Spend → Settings**. The **Banks** section says how many of the 10 Trial connections this server has used. Removed banks still count, and Plaid's Dashboard homepage has the real number. At 10 it warns that another link will fail while you're on the Trial, but it doesn't stop you.
-2. Press **Connect bank**. Plaid Link opens on its own page. Pick Bank of America, sign in on the bank's pages, and choose which credit cards to share. The dashboard asks Link for credit cards only, but Bank of America shows its own list of accounts, and Plaid says its filter may not reach a bank's own screen, so that list can include checking and savings too. Plaid says an account you pick there that isn't a credit card isn't added, and if you pick only accounts that aren't credit cards, the link fails and Link asks you to try again. That's from Plaid's docs and hasn't been tried with Bank of America yet.
+2. Press **Connect bank**. Plaid Link opens on its own page. Pick your card issuer (Bank of America, say), sign in, and choose which credit cards to share. The dashboard asks Link for credit cards only, but institutions that sign you in on their own pages show their own list of accounts, and Plaid says its filter may not reach that screen, so it can include checking and savings too. Plaid says an account you pick there that isn't a credit card isn't added to Spend, and if you pick only accounts that aren't credit cards, the link fails and Link asks you to try again. (Checking, savings, and brokerage accounts belong in Savings, which has its own Connect button.)
 3. Link brings you back to Spend settings with the bank's **Choose cards** open. For each account, pick:
    - **an existing card**, to put the bank's transactions on a card you made for CSV imports. The card with the same last 4 is suggested. Do this for every card with CSV history, so the two meet on one card (below).
    - **New card**, which makes a card named after the bank's name for the account. Like every new card it starts out excluded, so include it in **Cards**.
@@ -164,9 +176,9 @@ Connecting the same bank login twice is refused before the dashboard asks Plaid 
 
 **Keeping up to date**
 
-- Plaid says it checks a bank for new transactions one to four times a day, depending on the bank (it doesn't say how often for Bank of America), and it tells the dashboard when there's something new, so new transactions usually show up within hours. The dashboard also syncs every bank every 6 hours, in case a notice is missed.
+- Plaid says it checks a bank for new transactions one to four times a day, depending on the institution, and it tells the dashboard when there's something new, so new transactions usually show up within hours. The dashboard also syncs every bank every 6 hours, in case a notice is missed.
 - **Refresh** on a bank gets whatever Plaid has right now. It doesn't make Plaid ask the bank, which is a separate paid call after the Trial. Like the first sync, one that takes more than about 40 seconds carries on in the background, and the page says so.
-- Each morning at 06:00 (family time), and when Plaid says they changed, each card's last statement date from the bank becomes a closing date, and the latest one sets the card's usual closing day. A date 15 days or less from one you entered by hand is skipped: yours wins. A new date from the bank 15 days or less from an earlier one it sent for that card (the bank moved it by a day, say) moves that closing date rather than adding a second one. If Bank of America doesn't send statement dates, the usual closing day keeps working as before.
+- Each morning at 06:00 (family time), and when Plaid says they changed, each card's last statement date from the bank becomes a closing date, and the latest one sets the card's usual closing day. A date 15 days or less from one you entered by hand is skipped: yours wins. A new date from the bank 15 days or less from an earlier one it sent for that card (the bank moved it by a day, say) moves that closing date rather than adding a second one. If your issuer doesn't send statement dates, the usual closing day keeps working as before.
 - A pending transaction that posts keeps the category, person, and note you gave it. So does one the bank changes enough that Plaid sends it again under a new id.
 - If a sync replaces a transaction while you have unsaved changes on it in the drill-down (a pending one posts, or the bank's copy replaces a CSV row), **Save** saves nothing, moves your changes to the transaction that took its place, and says so. Check them and save again. If the new transaction holds a different value from the one you saw, that Save says so, as when someone else changes a transaction.
 - Plaid's category for a transaction goes through **Bank categories** in Spend settings, after your rules. Change as many codes' categories there as you like, then press **Save** once for all of them; **Discard changes** drops them, and leaving the page with changes asks first. A detailed code can also go back to its main category's (the first choice in its list). Saved changes apply from then on, and to past transactions with **Apply to past transactions**. If someone else changed a code while you were editing, Save saves nothing and says which one; check it and save again.
@@ -180,7 +192,7 @@ Connecting the same bank login twice is refused before the dashboard asks Plaid 
 - If you untick a card while reconnecting, it keeps its history, and Spend settings says the bank didn't share it.
 - When Plaid says the login has new accounts, or a sync gets transactions for an account the dashboard doesn't know, Spend settings offers **Load accounts** first, which picks up any account the login already shares, and **Add accounts**, which reconnects with the account list open. New accounts then wait in **Choose cards**. Those transactions aren't lost meanwhile: attaching the account fetches the bank's whole history again.
 - If the bank gives a card's account a new number (a reissued card, say), after **Load accounts** or a reconnect the old one shows as a card the bank didn't share, and the new one waits in **Choose cards**. Put it on the old card (it's suggested when the last 4 match): the card moves to the new account, and its history isn't doubled, since the new account's transactions replace the old account's copies.
-- Bank of America's consent lasts 12 months. About a week before it ends, Spend settings says "Reconnect before" the date.
+- Some institutions' consent expires (Bank of America's lasts 12 months). About a week before it ends, Spend settings says "Reconnect before" the date.
 - If a bank says "This bank connection no longer works at Plaid", Reconnect can't fix it: remove the bank and connect it again.
 
 **Removing a bank**
@@ -189,7 +201,7 @@ Connecting the same bank login twice is refused before the dashboard asks Plaid 
 2. **Also delete its transactions** deletes only the transactions that came from this bank connection. The rows they had replaced come back: CSV rows, or an earlier connection's posted transactions, each with the category, person, and note set by hand on the bank's copy. CSV rows from an import you undid don't come back, unless you imported that file again. In Spend settings, a bank removed this way says so, rather than saying its cards kept their history.
 3. If the bank is in the middle of a long sync, Remove waits up to about 40 seconds, then says "That bank is busy syncing. Try again in a minute." Nothing is removed then. Finishing a reconnect can say the same; reconnect again in a minute. If Plaid is just slow to confirm the removal, the bank is removed anyway, the page says Plaid didn't confirm it yet, and the dashboard keeps asking Plaid (step 6).
 4. Removing a bank doesn't give back a Trial connection.
-5. **Also remove the dashboard in Bank of America's own connected apps settings.** Plaid says some banks keep listing a removed connection there.
+5. **Also remove the dashboard in the institution's own connected apps settings**, if it has them (Bank of America does). Plaid says some institutions keep listing a removed connection there.
 6. If Plaid doesn't confirm the removal, the dashboard tries again every hour, 12 times, then gives up with a notice naming the bank, in Spend settings and on the System page. Remove the dashboard at the bank, or at my.plaid.com, then dismiss the notice in Spend settings or on the System page.
 
 Linking a removed bank again doesn't double its history. Plaid sends the history again under new ids, and when you attach its accounts to the same cards, those transactions replace the old connection's copies, carrying over what you set by hand, the same way they replace CSV rows.
@@ -208,28 +220,28 @@ To see whether the real policy can be narrowed:
 4. A line names the directive that would have blocked something and the origin it came from. Keep that source in the real policy. If it's a new source Plaid needs, add it to the report-only policy as well, so the next link is clean.
 5. To try a narrower step, change only `contentSecurityPolicyReportOnly` in `plaidLinkHeaders`, deploy, and link again. Move a change into `contentSecurityPolicy` only after a whole link reports nothing.
 
-## Savings: connecting Fidelity
+## Savings: connecting a bank or brokerage
 
-The Savings panel shows the family's Fidelity cash management (checking) and brokerage accounts as summary numbers: each account's balance at the start of the month, the money put in and taken out, the market (or other) change, the balance now, past months, and a six-month graph of the total. It keeps balances and the dates and amounts of money moving in and out, never the transactions themselves, merchant names, or holdings. I've linked Fidelity this way. Whether Plaid gives your brokerage its deposits and withdrawals depends on Investments (below); if it doesn't, a CSV import fills them in.
+The Savings panel shows the family's checking, savings, cash management, and brokerage accounts as summary numbers: each account's balance at the start of the month, the money put in and taken out, the market (or other) change, the balance now, past months, and a six-month graph of the total. It keeps balances and the dates and amounts of money moving in and out, never the transactions themselves, merchant names, or holdings. Any bank or brokerage Plaid supports works; I use a Fidelity cash management account and brokerage, so Fidelity is the example below. Whether Plaid gives your brokerage its deposits and withdrawals depends on Investments (below); if it doesn't, a CSV import fills them in.
 
 **Before you connect**
 
-- Only the Plaid team's owner can do this part. In Plaid's Dashboard, check that **Investments** is enabled for production, and request it if it isn't. That's what gives the brokerage its deposits and withdrawals. Plaid doesn't publish which products Fidelity supports, so it's worth checking in the Dashboard that Fidelity offers Transactions too; the checklist says how.
-- Fidelity uses one of the 10 Trial connections, the same count Spend uses. Fidelity signs you in on its own pages, and its consent lasts 12 months, so **Reconnect** comes around once a year, as it does for Bank of America.
+- Only the Plaid team's owner can do this part. In Plaid's Dashboard, check that **Investments** is enabled for production, and request it if it isn't. That's what gives the brokerage its deposits and withdrawals. Plaid doesn't publish which products every institution supports, so for a brokerage it's worth checking in the Dashboard that it offers Investments (and Transactions, for a cash account).
+- Each bank or brokerage login uses one of the 10 Trial connections, the same count Spend uses. Some institutions' consent expires (Fidelity's lasts 12 months), so **Reconnect** comes around once a year for those.
 
 **Connecting**
 
 1. Turn the **Savings** panel on for the people who should see it (Admin, panel access). On an existing install it's off for everyone, admins included, until you do. Anyone with the panel sees the numbers; only admins see **Settings**.
-2. Open **Savings → Settings** and press **Connect an account**. Plaid Link opens on its own page and offers checking, savings, cash management, and investment accounts only. Pick Fidelity and sign in.
+2. Open **Savings → Settings** and press **Connect an account**. Plaid Link opens on its own page and offers checking, savings, cash management, and investment accounts only. Pick your bank or brokerage (Fidelity, say) and sign in. Connect each institution separately.
 3. Back in Savings settings, choose which accounts to show and give each a nickname (up to 40 characters), then press **Save accounts**. An account you don't show isn't stored or fetched, and you can show it later with **Choose accounts**. Saving reads the first balances right away.
 4. The first month starts from that first balance ("Since <date>"), so deposits and withdrawals count from the next day. Plaid has no past balances, so the graph starts on the day you link and fills in over six months.
 
 **What Investments means here**
 
-The cash management account's deposits and withdrawals come from Plaid's Transactions product. The brokerage's come from Plaid's Investments product: cash deposits, contributions, withdrawals, and cash transfers. Dividends, interest, fees, buys, and sells aren't money put in or taken out, so they land in **Market change**. If Investments isn't available for the connection, Savings settings says why under it:
+A checking, savings, or cash management account's deposits and withdrawals come from Plaid's Transactions product. The brokerage's come from Plaid's Investments product: cash deposits, contributions, withdrawals, and cash transfers. Dividends, interest, fees, buys, and sells aren't money put in or taken out, so they land in **Market change**. If Investments isn't available for the connection, Savings settings says why under it:
 
 - "Investments isn't enabled for this Plaid account." The team's owner turns it on in the Plaid Dashboard. Nothing else changes: the next sync picks it up.
-- The institution didn't share investment activity. Removing the connection and connecting again, allowing investments when Fidelity asks, may fix it.
+- The institution didn't share investment activity. Removing the connection and connecting again, allowing investments when the institution asks, may fix it.
 - Couldn't read the brokerage's activity this time. A passing hiccup; the next sync tries again.
 
 Until it works, the brokerage shows Start, Now, and the month's total change, with "Not available" for deposits and withdrawals.
@@ -238,11 +250,11 @@ Until it works, the brokerage shows Start, Now, and the month's total change, wi
 
 - Savings updates every morning at 05:30 (family time), when Plaid says there's something new, and when you press **Refresh**. Plaid's balances are its cached ones (free, at least daily), so **Now** can lag the market by up to a day; each balance shows when it was read. The home card warns once the balances are more than a day old.
 - **Hide** takes an account off the panel without stopping its sync, so showing it again leaves no gap. **Rename** changes its nickname.
-- **Remove** ends the connection at Plaid, as for a bank. Its accounts keep their past months, marked "Connection removed", unless you tick **Also delete its data**, which deletes every balance, deposit, and withdrawal it kept. Removing doesn't give back a Trial connection, and connecting Fidelity again starts its numbers over from the new link.
+- **Remove** ends the connection at Plaid, as for a bank. Its accounts keep their past months, marked "Connection removed", unless you tick **Also delete its data**, which deletes every balance, deposit, and withdrawal it kept. Removing doesn't give back a Trial connection, and connecting the institution again starts its numbers over from the new link.
 
 ## Savings: importing CSVs and adding accounts by hand
 
-Plaid has no past balances, and it may not give everything you want from your bank. Any bank's CSV export fills that in. Everything here is in **Savings → Settings**, for admins.
+Plaid has no past balances, it may not give everything you want from your institution, and you may not use Plaid at all. Any bank's or brokerage's CSV export fills that in, and accounts you can't connect can be added by hand. Everything here is in **Savings → Settings**, for admins.
 
 **Adding an account by hand.** Under **Accounts added by hand**, give it a nickname and pick Cash or Investment. A hand-added account has no Plaid link: you keep it current by importing its CSV, or with **Set balance** (an amount as of today or a past date; negative is fine for an overdrawn account). Set balance never overwrites a day Plaid has a balance for.
 
@@ -252,7 +264,7 @@ Plaid has no past balances, and it may not give everything you want from your ba
 2. **What rows mean.** Rows are grouped by the first two words of their description ("DIRECT DEPOSIT", "YOU SOLD", "INTEREST EARNED"). For each group, choose **Deposit**, **Withdrawal**, **By sign**, or **Not counted** (interest, dividends, trades, and fees, which land in Other or Market change). Sensible defaults are picked, and groups you haven't seen before are marked **New**.
 3. **Results.** The date range, what it will add, and what's already there. Then **Import**.
 
-Your column and group choices are saved on the account. The next file with the same columns goes straight to the results, unless it has a description wording you haven't decided on yet. **Fidelity's "History for Account" exports are built in**, both the cash management and the brokerage layouts, so those files skip the first two steps.
+Your column and group choices are saved on the account. The next file with the same columns goes straight to the results, unless it has a description wording you haven't decided on yet. Any institution's CSV works through these steps. A few formats are also **built in**, so their files skip the first two steps: today that's Fidelity's "History for Account" exports (cash management and brokerage). Built-in formats live in `src/server/panels/savings/importFormats.ts`, and adding one for another institution is a small, self-contained change.
 
 Details:
 
@@ -262,9 +274,13 @@ Details:
 - Interest counts as Other change, not as a deposit, whether it comes from a CSV or from Plaid.
 - Files can be up to 5 MB, 20,000 rows, and 200 columns, in UTF-8. Decimal commas and dates with times aren't read; the file is refused with the line number.
 
-## Spend: importing a Bank of America CSV
+## Spend: importing a credit card CSV
 
-Without Plaid, Spend gets its transactions from CSV files an admin downloads from Bank of America and imports. With Plaid, CSV files bring in history from before the bank was linked. **Check these steps against a real export**: Bank of America doesn't document the file, so everything below comes from other people's importers (see `docs/research/spend-plaid-csv.md` §1), and the phase 6a plan has a "Verify with a real export" checklist.
+Without Plaid, Spend gets its transactions from CSV files an admin downloads from the card issuer and imports. With Plaid, CSV files bring in history from before the card was linked, or fill gaps in what Plaid sent.
+
+**Today Spend reads one format, Bank of America's credit card export.** Cards from other issuers come in through Plaid. Spend's importer checks for that one header, unlike the Savings importer, which maps any file's columns; adding another issuer's format means adding a parser alongside `src/server/panels/spend/bofa.ts`. Contributions welcome.
+
+For Bank of America (the bank doesn't document the file, so the format comes from other people's importers; see `docs/research/spend-plaid-csv.md` §1):
 
 1. Sign in to Bank of America's website and open the credit card's account activity.
 2. Choose **Download**, pick the **Transaction Period** (or the statement) you want, and pick **Microsoft Excel Format**. That gives a `.csv` file, whose name may end in the card's last 4 (such as `April2026_1234.csv`). Bank of America offers about 12 months of activity this way.
@@ -310,7 +326,7 @@ Turning Plaid off (removing `PLAID_CLIENT_ID` and `PLAID_SECRET`) after a bank i
 
 Rolling back to a version without Plaid is the same: the Plaid migration only added a table and columns, so an older version runs on the same database and leaves them alone. Transactions from the bank still show, and CSV rows they replaced stay hidden. I haven't run an older version against a database with linked banks, though.
 
-Either way, the connections stay active at Plaid. And if the encryption key is ever lost while those bank logins are saved, **Reset links for a new key** refuses to run until Plaid is set up again. To stop for good, remove each bank in Spend settings first (and at Bank of America), then take the settings out. Removing doesn't give back Trial connections.
+Either way, the connections stay active at Plaid. And if the encryption key is ever lost while those logins are saved, **Reset links for a new key** refuses to run until Plaid is set up again. To stop for good, remove each connection in Spend and Savings settings first (and in each institution's own connected apps settings, if it has them), then take the settings out. Removing doesn't give back Trial connections.
 
 ## Development
 
