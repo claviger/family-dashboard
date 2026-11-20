@@ -1,0 +1,10 @@
+<!-- @dsCard group="Status" height=240 subtitle="Info, brand and error notices" -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+  <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 11v5M12 8v.01"/></symbol>
+  <symbol id="i-alert" viewBox="0 0 24 24"><path d="M12 4 21 19.5H3z"/><path d="M12 10v4M12 17v.01"/></symbol>
+</defs></svg>
+<div style="display:flex;flex-direction:column;gap:12px;max-width:560px">
+  <p class="notice"><svg class="icon"><use href="#i-info"/></svg><span>Calendar last updated 5 minutes ago.</span></p>
+  <p class="notice notice-brand"><svg class="icon"><use href="#i-info"/></svg><span>Someone else changed this to Groceries. Your pick isn't saved yet.</span></p>
+  <p class="notice notice-danger" role="alert"><svg class="icon"><use href="#i-alert"/></svg><span>That didn't save. Check your connection and try again.</span></p>
+</div>

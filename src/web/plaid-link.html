@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <title>Connect an account</title>
+  </head>
+  <body>
+    <main class="link-page">
+      <h1>Connect an account</h1>
+      <p id="link-status" role="status" aria-live="polite">Getting the bank connection ready.</p>
+      <noscript><p>This page needs JavaScript to open Plaid.</p></noscript>
+      <p><a id="link-back" href="/spend?tab=settings">Back to Spend settings</a></p>
+    </main>
+    <script type="module" src="./plaid/link.ts"></script>
+  </body>
+</html>

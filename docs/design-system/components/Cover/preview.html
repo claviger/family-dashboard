@@ -1,0 +1,41 @@
+<!-- @dsCard height=288 -->
+<style>
+  body { margin: 0; padding: 0; }
+  .cover { position: relative; width: 960px; height: 288px; background: var(--canvas); overflow: hidden; font-family: var(--font-sans); }
+  .cover svg { position: absolute; left: 0; top: 0; }
+  .cover .words { position: absolute; left: 32px; bottom: 32px; width: 440px; }
+  .cover h1 { font: 600 76px/.95 var(--font-display); margin: 0 0 12px; color: var(--ink); }
+  .cover p { font: 400 14px/20px var(--font-sans); margin: 0; color: var(--muted); }
+  .brand { fill: var(--brand); } .cal { fill: var(--calendar); } .tod { fill: var(--todo); }
+  .cho { fill: var(--chores); } .spe { fill: var(--spend); } .soft { fill: var(--brand-soft); }
+  .p56 { rx: 28px; }
+</style>
+<div class="cover">
+  <svg width="960" height="288" viewBox="0 0 960 288" aria-hidden="true">
+    <!--
+      blocks: clay (brand) pill 260x56 and disc 56, calendar blue pills 100x56 and 180x56, plum pill 160x56 and disc 56, amber disc 56 and pill 220x56, green pill 300x56 and disc 56, brand-soft pill 220x56 (the one tint).
+      arrangement: four staggered rows of pills and discs of unequal length, 14px apart, bleeding off the right edge, like a stack of list rows and avatars.
+      pattern: pills and discs from the radius scale, because the system is soft and friendly (radius-lg cards, radius-pill controls) and its parts are chips, rows and avatars.
+      scales: height 56 (space-5 + space-6), gap 14, rx 28 = half of 56 (radius-pill), discs 56.
+    -->
+    <rect class="brand p56" x="520" y="11" width="260" height="56"/>
+    <rect class="cal p56" x="794" y="11" width="100" height="56"/>
+    <rect class="tod p56" x="906" y="11" width="56" height="56"/>
+
+    <rect class="cho p56" x="520" y="81" width="56" height="56"/>
+    <rect class="spe p56" x="590" y="81" width="300" height="56"/>
+    <rect class="soft p56" x="904" y="81" width="80" height="56"/>
+
+    <rect class="cal p56" x="520" y="151" width="180" height="56"/>
+    <rect class="tod p56" x="714" y="151" width="160" height="56"/>
+    <rect class="spe p56" x="888" y="151" width="56" height="56"/>
+
+    <rect class="soft p56" x="520" y="221" width="220" height="56"/>
+    <rect class="cho p56" x="754" y="221" width="130" height="56"/>
+    <rect class="brand p56" x="898" y="221" width="56" height="56"/>
+  </svg>
+  <div class="words">
+    <h1>Family Dashboard</h1>
+    <p>Everyone's week, in one warm place.</p>
+  </div>
+</div>

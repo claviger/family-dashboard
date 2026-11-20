@@ -1,0 +1,111 @@
+{
+  "version": "7",
+  "dialect": "sqlite",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "6",
+      "when": 1794788930926,
+      "tag": "0000_furry_pyro",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1794796718954,
+      "tag": "0001_deep_the_hood",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1794804290770,
+      "tag": "0002_wet_sway",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1794806476745,
+      "tag": "0003_marvelous_albert_cleary",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1794830243787,
+      "tag": "0004_lumpy_ghost_rider",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1794848744798,
+      "tag": "0005_tearful_zarda",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1794861411258,
+      "tag": "0006_spend",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "6",
+      "when": 1794861418764,
+      "tag": "0007_spend_defaults",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1794990445967,
+      "tag": "0008_plaid",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1795045370108,
+      "tag": "0009_chore_board",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1795124399323,
+      "tag": "0010_spend_dedupe",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "6",
+      "when": 1795136259845,
+      "tag": "0011_savings",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "6",
+      "when": 1795145675149,
+      "tag": "0012_savings_csv",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "6",
+      "when": 1795147301157,
+      "tag": "0013_savings_import_profiles",
+      "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "6",
+      "when": 1795151027897,
+      "tag": "0014_savings_import_dates",
+      "breakpoints": true
+    }
+  ]
+}

@@ -1,0 +1,21 @@
+[Unit]
+Description=Family Dashboard
+After=network.target
+
+[Service]
+Type=simple
+User=dashboard
+WorkingDirectory=/opt/family-dashboard
+# Sets DATA_DIR=/var/lib/family-dashboard (must exist and be owned by "dashboard").
+EnvironmentFile=/etc/family-dashboard.env
+ExecStart=/usr/bin/node dist/server/index.js
+Restart=on-failure
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/family-dashboard
+ProtectHome=true
+PrivateTmp=true
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

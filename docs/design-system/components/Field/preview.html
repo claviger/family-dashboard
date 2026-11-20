@@ -1,0 +1,8 @@
+<!-- @dsCard group="Forms" height=250 subtitle="Input, select, textarea, an error and an unsaved edit" -->
+<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px;max-width:760px">
+  <label class="field">Title<input type="text" value="Soccer practice"></label>
+  <label class="field">Who<select><option>Maya</option><option>Sam</option></select></label>
+  <label class="field">Due date<input type="text" value="" aria-invalid="true" aria-describedby="e1"><span class="field-error" id="e1">Pick a date.</span></label>
+  <div class="field field-edited"><label class="field" style="display:contents">Category<select><option>Groceries</option></select></label><span class="field-edited-note">Changed, not saved</span></div>
+  <label class="field" style="grid-column:1/-1">Notes<textarea>Bring shin guards and water.</textarea></label>
+</div>
