@@ -60,6 +60,19 @@ export function scheduleType(schedule: ChoreSchedule): ScheduleType {
   return schedule.kind === 'none' ? 'as_needed' : 'fixed';
 }
 
+/** "Every weekday": a preset over the weekly schedule, every week on Monday to Friday. */
+export const EVERY_WEEKDAY = { kind: 'weekly', interval: 1, weekdays: [1, 2, 3, 4, 5] } as const satisfies ChoreSchedule;
+
+/** Whether a schedule is exactly the "Every weekday" preset: weekly, every week, on Monday to Friday and no other day. */
+export function isEveryWeekday(schedule: ChoreSchedule): boolean {
+  return (
+    schedule.kind === 'weekly' &&
+    schedule.interval === 1 &&
+    schedule.weekdays.length === EVERY_WEEKDAY.weekdays.length &&
+    EVERY_WEEKDAY.weekdays.every((d) => schedule.weekdays.includes(d))
+  );
+}
+
 const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'] as const;
 
 function ordinal(n: number): string {
@@ -69,7 +82,7 @@ function ordinal(n: number): string {
 }
 
 /**
- * The board's frequency summary (chore board spec): "Every day", "Fridays", "Every week on Mon, Thu",
+ * The board's frequency summary (chore board spec): "Every day", "Every weekday", "Fridays", "Every week on Mon, Thu",
  * "Every 2 weeks on Mon", "Monthly on the 1st", "Every 10 days after it's done", "As needed".
  */
 export function describeSchedule(schedule: ChoreSchedule): string {
@@ -77,6 +90,7 @@ export function describeSchedule(schedule: ChoreSchedule): string {
     case 'daily':
       return 'Every day';
     case 'weekly': {
+      if (isEveryWeekday(schedule)) return 'Every weekday';
       if (schedule.interval === 1 && schedule.weekdays.length === 1) return `${DAY_NAMES[schedule.weekdays[0]!]}s`;
       const days = schedule.weekdays.map((d) => WEEKDAY_LABELS[d]).join(', ');
       return schedule.interval === 1 ? `Every week on ${days}` : `Every ${schedule.interval} weeks on ${days}`;
@@ -95,7 +109,7 @@ export function describeSchedule(schedule: ChoreSchedule): string {
 
 /**
  * How many days apart a chore comes up, for the board's order (chore board spec "Sort order"):
- * daily 1, k weekdays every N weeks 7N / k, monthly 30, every N days or weeks after completion N or
+ * daily 1, k weekdays every N weeks 7N / k (so every weekday is 1.4, right after daily), monthly 30, every N days or weeks after completion N or
  * 7N. Null for as needed, which sorts after everything else.
  */
 export function frequencyPeriodDays(schedule: ChoreSchedule): number | null {

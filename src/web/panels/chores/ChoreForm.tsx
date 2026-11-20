@@ -1,6 +1,6 @@
 import { useRef, useState, type FormEvent, type Ref } from 'react';
 import {
-  CHORE_NOTES_MAX, CHORE_TITLE_MAX, describeSchedule, WEEKDAY_LABELS, type ChoreInput, type ChorePeopleEntry, type NewChoreInput,
+  CHORE_NOTES_MAX, CHORE_TITLE_MAX, describeSchedule, EVERY_WEEKDAY, WEEKDAY_LABELS, type ChoreInput, type ChorePeopleEntry, type NewChoreInput,
 } from '../../../shared/chores.js';
 import { formInput, scheduleProblem, showsStartDate, toSchedule, type ChoreFormValues, type ScheduleField } from './choreFormValues.js';
 import { wontSeeChores, wontSeeWarning } from './format.js';
@@ -42,6 +42,14 @@ export function ChoreForm(
   const assignee = props.assignTo?.find((p) => String(p.id) === v.assignee);
   const id = props.name.replace(/\W+/g, '-').toLowerCase();
   const scheduleNoteId = `${id}-schedule`;
+
+  /**
+   * Picking "Every weekday" also fills in the weekly fields with every week on Monday to Friday, so
+   * switching on to Weekly starts from those five days ticked.
+   */
+  function pickRepeats(repeats: ChoreFormValues['repeats']) {
+    set(repeats === 'weekdays' ? { repeats, interval: '1', weekdays: [...EVERY_WEEKDAY.weekdays] } : { repeats });
+  }
 
   /** Props that tie a schedule input to the schedule line while it has a problem. */
   function invalid(field: ScheduleField) {
@@ -105,8 +113,9 @@ export function ChoreForm(
         <>
           <label>
             Repeats
-            <select value={v.repeats} onChange={(e) => set({ repeats: e.target.value as ChoreFormValues['repeats'] })}>
+            <select value={v.repeats} onChange={(e) => pickRepeats(e.target.value as ChoreFormValues['repeats'])}>
               <option value="daily">Every day</option>
+              <option value="weekdays">Every weekday</option>
               <option value="weekly">Weekly</option>
               <option value="monthly">Monthly</option>
             </select>

@@ -1,4 +1,4 @@
-import { ChoreScheduleSchema, type Chore, type ChoreInput, type ChoreSchedule, type NewChoreInput } from '../../../shared/chores.js';
+import { ChoreScheduleSchema, EVERY_WEEKDAY, isEveryWeekday, type Chore, type ChoreInput, type ChoreSchedule, type NewChoreInput } from '../../../shared/chores.js';
 
 /** The chore editor's fields as the form holds them (strings, as inputs give them). Pure, so it's unit-tested. */
 export interface ChoreFormValues {
@@ -8,7 +8,8 @@ export interface ChoreFormValues {
   assignee: string;
   startDate: string;
   type: 'fixed' | 'after' | 'none';
-  repeats: 'daily' | 'weekly' | 'monthly';
+  /** 'weekdays' is "Every weekday", saved as weekly, every week, on Monday to Friday (`EVERY_WEEKDAY`). */
+  repeats: 'daily' | 'weekdays' | 'weekly' | 'monthly';
   interval: string;
   weekdays: number[];
   /** '1' to '31', or 'last'. */
@@ -37,6 +38,8 @@ export function toChoreFormValues(chore: Chore, today: string): ChoreFormValues 
     case 'daily':
       return { ...v, repeats: 'daily' };
     case 'weekly':
+      // The weekly fields are filled in too, so switching to Weekly shows Monday to Friday ticked.
+      if (isEveryWeekday(s)) return { ...v, repeats: 'weekdays', interval: '1', weekdays: [...EVERY_WEEKDAY.weekdays] };
       return { ...v, repeats: 'weekly', interval: String(s.interval), weekdays: s.weekdays };
     case 'monthly':
       return { ...v, repeats: 'monthly', monthDay: String(s.day) };
@@ -52,6 +55,7 @@ export function toSchedule(v: ChoreFormValues): ChoreSchedule {
   if (v.type === 'none') return { kind: 'none' };
   if (v.type === 'after') return { kind: 'after', every: Number(v.every), unit: v.unit };
   if (v.repeats === 'daily') return { kind: 'daily' };
+  if (v.repeats === 'weekdays') return { ...EVERY_WEEKDAY, weekdays: [...EVERY_WEEKDAY.weekdays] };
   if (v.repeats === 'weekly') return { kind: 'weekly', interval: Number(v.interval), weekdays: v.weekdays };
   return { kind: 'monthly', day: v.monthDay === 'last' ? 'last' : Number(v.monthDay) };
 }

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  ChoreScheduleSchema, compareBoardOrder, describeSchedule, frequencyPeriodDays, HistoryQuerySchema, isRepeating, NewChoreInputSchema, scheduleType,
+  ChoreScheduleSchema, compareBoardOrder, describeSchedule, EVERY_WEEKDAY, frequencyPeriodDays, HistoryQuerySchema, isEveryWeekday, isRepeating, NewChoreInputSchema, scheduleType,
   type ChoreSchedule,
 } from './chores.js';
 
@@ -20,6 +20,27 @@ describe('describeSchedule', () => {
     expect(describeSchedule({ kind: 'after', every: 1, unit: 'weeks' })).toBe("Every week after it's done");
     expect(describeSchedule({ kind: 'after', every: 3, unit: 'weeks' })).toBe("Every 3 weeks after it's done");
     expect(describeSchedule({ kind: 'none' })).toBe('As needed');
+  });
+
+  it('says "Every weekday" for every week on exactly Monday to Friday, and lists the days otherwise', () => {
+    expect(describeSchedule({ kind: 'weekly', interval: 1, weekdays: [1, 2, 3, 4, 5] })).toBe('Every weekday');
+    expect(describeSchedule(EVERY_WEEKDAY)).toBe('Every weekday');
+    expect(describeSchedule({ kind: 'weekly', interval: 1, weekdays: [1, 2, 3, 4] })).toBe('Every week on Mon, Tue, Wed, Thu');
+    expect(describeSchedule({ kind: 'weekly', interval: 1, weekdays: [1, 2, 3, 4, 5, 6] })).toBe('Every week on Mon, Tue, Wed, Thu, Fri, Sat');
+    expect(describeSchedule({ kind: 'weekly', interval: 1, weekdays: [0, 1, 2, 3, 4] })).toBe('Every week on Sun, Mon, Tue, Wed, Thu');
+    expect(describeSchedule({ kind: 'weekly', interval: 2, weekdays: [1, 2, 3, 4, 5] })).toBe('Every 2 weeks on Mon, Tue, Wed, Thu, Fri');
+  });
+});
+
+describe('isEveryWeekday', () => {
+  it('is true only for every week on exactly Monday to Friday', () => {
+    expect(EVERY_WEEKDAY).toEqual({ kind: 'weekly', interval: 1, weekdays: [1, 2, 3, 4, 5] });
+    expect(isEveryWeekday(EVERY_WEEKDAY)).toBe(true);
+    expect(isEveryWeekday(ChoreScheduleSchema.parse({ kind: 'weekly', interval: 1, weekdays: [5, 4, 3, 2, 1, 1] }))).toBe(true);
+    expect(isEveryWeekday({ kind: 'weekly', interval: 2, weekdays: [1, 2, 3, 4, 5] })).toBe(false);
+    expect(isEveryWeekday({ kind: 'weekly', interval: 1, weekdays: [1, 2, 3, 4] })).toBe(false);
+    expect(isEveryWeekday({ kind: 'weekly', interval: 1, weekdays: [0, 1, 2, 3, 4, 5, 6] })).toBe(false);
+    expect(isEveryWeekday({ kind: 'daily' })).toBe(false);
   });
 });
 
@@ -56,6 +77,10 @@ describe('frequencyPeriodDays', () => {
     expect(frequencyPeriodDays({ kind: 'after', every: 2, unit: 'weeks' })).toBe(14);
     expect(frequencyPeriodDays({ kind: 'none' })).toBeNull();
   });
+
+  it('gives every weekday 7 / 5 = 1.4 days', () => {
+    expect(frequencyPeriodDays(EVERY_WEEKDAY)).toBeCloseTo(1.4);
+  });
 });
 
 describe('compareBoardOrder', () => {
@@ -73,6 +98,18 @@ describe('compareBoardOrder', () => {
       row(9, 'a cat', { kind: 'daily' }),
     ];
     expect([...rows].sort(compareBoardOrder).map((r) => r.choreId)).toEqual([5, 9, 4, 6, 7, 3, 2, 8, 1]);
+  });
+
+  it('puts every weekday right after every day, ahead of every 2 days and twice a week', () => {
+    const row = (choreId: number, title: string, schedule: ChoreSchedule) => ({ choreId, title, schedule });
+    const rows = [
+      row(1, 'Water plants', { kind: 'after', every: 2, unit: 'days' }),
+      row(2, 'Laundry', { kind: 'weekly', interval: 1, weekdays: [1, 4] }),
+      row(3, 'Pack lunches', EVERY_WEEKDAY),
+      row(4, 'Dishes', { kind: 'daily' }),
+      row(5, 'Six days', { kind: 'weekly', interval: 1, weekdays: [1, 2, 3, 4, 5, 6] }),
+    ];
+    expect([...rows].sort(compareBoardOrder).map((r) => r.choreId)).toEqual([4, 5, 3, 1, 2]);
   });
 });
 

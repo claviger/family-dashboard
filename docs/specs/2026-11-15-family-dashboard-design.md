@@ -502,6 +502,7 @@ The Chores panel is a board of the household's chores: every chore, how often it
 - **Fields:** title, notes, who has it (a user, or **Unassigned**), frequency, start date, and status (`active`, `paused`, or `archived`).
 - **Frequencies:**
   - Daily
+  - **Every weekday:** Monday to Friday. It's a preset, not a schedule of its own: it's saved as weekly, every week, on Mon–Fri, so it follows the weekly rules (Saturday and Sunday are skipped, and it sorts right after daily at 7 / 5 = 1.4 days). The form offers it next to "Every day", and a chore saved as weekly, every week, on exactly Mon–Fri opens with it picked; switching to Weekly shows those five days ticked.
   - Weekly on chosen weekdays
   - Every N weeks on chosen weekdays, counted from the week of the start date
   - Monthly on day N (1–31; in shorter months, the last day) or on the last day of the month
@@ -549,7 +550,7 @@ All dates are family-local.
 
 ### 11.4 The board and assignment
 
-- **The board** lists every active chore (paused and archived ones aren't on it), most often first: each frequency has a period in days (daily 1; k weekdays every N weeks 7N / k; monthly 30; every N days or weeks after completion N or 7N; as needed last), then by title. Each row shows the title, the frequency ("Every day", "Fridays", "Every week on Mon, Thu", "Every 2 weeks on Mon", "Monthly on the 1st", "Every 10 days after it's done", "As needed"), who has it (avatar and name, "You", or Unassigned), and its state:
+- **The board** lists every active chore (paused and archived ones aren't on it), most often first: each frequency has a period in days (daily 1; k weekdays every N weeks 7N / k; monthly 30; every N days or weeks after completion N or 7N; as needed last), then by title. Each row shows the title, the frequency ("Every day", "Every weekday", "Fridays", "Every week on Mon, Thu", "Every 2 weeks on Mon", "Monthly on the 1st", "Every 10 days after it's done", "As needed"), who has it (avatar and name, "You", or Unassigned), and its state:
   - Assigned with an open occurrence: "Due today", or "Overdue since yesterday" in the danger color (with the word, never color alone). An open occurrence due after today isn't due yet, so it reads "Next: Wed, Nov 18" (or "Next: Tomorrow").
   - Assigned, nothing due yet: "Next: Fri, Nov 27".
   - Assigned, as needed: "On your list" or "On their list".

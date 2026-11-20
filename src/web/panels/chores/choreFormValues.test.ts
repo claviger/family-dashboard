@@ -16,6 +16,9 @@ describe('toSchedule', () => {
   it('builds each schedule kind from the form', () => {
     const v = (over: Partial<ChoreFormValues>) => toSchedule({ ...empty, ...over });
     expect(v({ repeats: 'daily' })).toEqual({ kind: 'daily' });
+    expect(v({ repeats: 'weekdays' })).toEqual({ kind: 'weekly', interval: 1, weekdays: [1, 2, 3, 4, 5] });
+    // Every weekday ignores the weekly fields the form may still hold.
+    expect(v({ repeats: 'weekdays', interval: '3', weekdays: [0] })).toEqual({ kind: 'weekly', interval: 1, weekdays: [1, 2, 3, 4, 5] });
     expect(v({ repeats: 'weekly', interval: '2', weekdays: [1, 4] })).toEqual({ kind: 'weekly', interval: 2, weekdays: [1, 4] });
     expect(v({ repeats: 'monthly', monthDay: '31' })).toEqual({ kind: 'monthly', day: 31 });
     expect(v({ repeats: 'monthly', monthDay: 'last' })).toEqual({ kind: 'monthly', day: 'last' });
@@ -83,6 +86,42 @@ describe('toChoreFormValues', () => {
     for (const schedule of [{ kind: 'daily' }, { kind: 'monthly', day: 'last' }, { kind: 'weekly', interval: 3, weekdays: [0, 6] }, { kind: 'none' }] as const) {
       expect(toSchedule(toChoreFormValues({ ...chore, schedule: { ...schedule } as Chore['schedule'] }, '2026-11-18'))).toEqual(schedule);
     }
+  });
+});
+
+describe('every weekday in the form', () => {
+  const chore: Chore = {
+    id: 2, title: 'Pack lunches', notes: null, assignee: null,
+    schedule: { kind: 'weekly', interval: 1, weekdays: [1, 2, 3, 4, 5] }, startDate: '2026-11-01', status: 'active',
+  };
+
+  it('opens a weekly, every week, Monday to Friday chore as "Every weekday" and saves it unchanged', () => {
+    const v = toChoreFormValues(chore, '2026-11-18');
+    expect(v).toMatchObject({ type: 'fixed', repeats: 'weekdays' });
+    expect(toChoreInput(v).schedule).toEqual({ kind: 'weekly', interval: 1, weekdays: [1, 2, 3, 4, 5] });
+  });
+
+  it('has the five days ticked, every week, when switched to Weekly', () => {
+    const v = toChoreFormValues(chore, '2026-11-18');
+    expect(v).toMatchObject({ interval: '1', weekdays: [1, 2, 3, 4, 5] });
+    expect(toSchedule({ ...v, repeats: 'weekly' })).toEqual({ kind: 'weekly', interval: 1, weekdays: [1, 2, 3, 4, 5] });
+  });
+
+  it('opens other weekly schedules as Weekly', () => {
+    for (const schedule of [
+      { kind: 'weekly', interval: 2, weekdays: [1, 2, 3, 4, 5] },
+      { kind: 'weekly', interval: 1, weekdays: [1, 2, 3, 4] },
+      { kind: 'weekly', interval: 1, weekdays: [0, 1, 2, 3, 4, 5, 6] },
+    ] as const) {
+      const v = toChoreFormValues({ ...chore, schedule: { ...schedule, weekdays: [...schedule.weekdays] } }, '2026-11-18');
+      expect(v.repeats).toBe('weekly');
+      expect(toSchedule(v)).toEqual(schedule);
+    }
+  });
+
+  it('has no schedule problem and no start date', () => {
+    expect(scheduleProblem({ ...empty, repeats: 'weekdays', weekdays: [] })).toBeNull();
+    expect(showsStartDate({ ...empty, repeats: 'weekdays', interval: '2' })).toBe(false);
   });
 });
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { ChoreSchedule, RepeatingSchedule } from '../../../shared/chores.js';
+import { EVERY_WEEKDAY, type ChoreSchedule, type RepeatingSchedule } from '../../../shared/chores.js';
 import {
   daysBetween, dueDateToGenerate, dueOnAssignment, fromAfterClose, monthlyDate, nextAfterCompletionDate, nextDueDate, nextScheduledDate,
   upcomingOccurrence, weekdayOf, weekStart, type ChoreTimeline,
@@ -180,5 +180,35 @@ describe('the next due date for every kind', () => {
     expect(dueDateToGenerate(fridays, '2026-11-01', closed('2026-11-21', '2026-11-20', '2026-11-18'))).toBe('2026-11-27');
     expect(dueDateToGenerate({ kind: 'daily' }, '2026-11-01', closed('2026-11-21', '2026-11-15', '2026-11-15'))).toBe('2026-11-21');
     expect(dueDateToGenerate({ kind: 'daily' }, '2026-11-01', none('2026-11-15'))).toBe('2026-11-15'); // nothing yet: F is today
+  });
+});
+
+describe('every weekday (weekly, every week, Monday to Friday)', () => {
+  // 2026-11-20 is a Friday, 2026-11-21 a Saturday, 2026-11-23 a Monday.
+  const none = (today: string): ChoreTimeline => ({ today, latestDueDate: null, lastClosedDate: null });
+  const closed = (today: string, latestDueDate: string, lastClosedDate: string): ChoreTimeline => ({ today, latestDueDate, lastClosedDate });
+
+  it('lands on each weekday and skips Saturday and Sunday', () => {
+    expect(nextScheduledDate(EVERY_WEEKDAY, '2026-11-01', '2026-11-18')).toBe('2026-11-18'); // Wednesday
+    expect(nextScheduledDate(EVERY_WEEKDAY, '2026-11-01', '2026-11-20')).toBe('2026-11-20'); // Friday
+    expect(nextScheduledDate(EVERY_WEEKDAY, '2026-11-01', '2026-11-21')).toBe('2026-11-23'); // Saturday → Monday
+    expect(nextScheduledDate(EVERY_WEEKDAY, '2026-11-01', '2026-11-22')).toBe('2026-11-23'); // Sunday → Monday
+  });
+
+  it('claimed on a Saturday is due Monday', () => {
+    expect(dueOnAssignment(EVERY_WEEKDAY, '2026-11-01', none('2026-11-21'))).toBe('2026-11-23');
+    expect(dueOnAssignment(EVERY_WEEKDAY, '2026-11-01', none('2026-11-22'))).toBe('2026-11-23');
+  });
+
+  it('done on Friday comes back due Monday once Friday has passed', () => {
+    const doneFriday = closed('2026-11-20', '2026-11-20', '2026-11-20');
+    expect(upcomingOccurrence(EVERY_WEEKDAY, '2026-11-01', doneFriday)).toEqual({ createOn: '2026-11-21', dueDate: '2026-11-23' });
+    expect(dueDateToGenerate(EVERY_WEEKDAY, '2026-11-01', doneFriday)).toBeNull(); // still Friday
+    expect(dueDateToGenerate(EVERY_WEEKDAY, '2026-11-01', { ...doneFriday, today: '2026-11-21' })).toBe('2026-11-23');
+    expect(dueDateToGenerate(EVERY_WEEKDAY, '2026-11-01', { ...doneFriday, today: '2026-11-22' })).toBe('2026-11-23');
+  });
+
+  it('done on Wednesday comes back due Thursday', () => {
+    expect(dueDateToGenerate(EVERY_WEEKDAY, '2026-11-01', closed('2026-11-19', '2026-11-18', '2026-11-18'))).toBe('2026-11-19');
   });
 });

@@ -266,6 +266,35 @@ test('a member adds a chore for themselves on the Board, and it lands on their l
   expect(await openTodoTitles(page, member.email)).toContain(title);
 });
 
+test('an admin adds an every weekday chore, and editing it shows Every weekday with Monday to Friday behind it', async ({ page }, info) => {
+  const title = `Pack lunches ${newStamp(info)}`;
+  await signIn(page, 'admin@example.com');
+  await page.goto('/chores');
+  await page.getByRole('button', { name: 'Add chore' }).click();
+  const form = page.getByRole('form', { name: 'New chore' });
+  await form.getByLabel('Title').fill(title);
+  await form.getByLabel('Repeats').selectOption({ label: 'Every weekday' });
+  await expect(form.getByLabel('Every how many weeks')).toHaveCount(0);
+  await expect(form.getByLabel('Starting the week of')).toHaveCount(0);
+  await expect(form.locator('[aria-live="polite"]')).toHaveText('Every weekday');
+  await form.getByRole('button', { name: 'Add', exact: true }).click();
+  await expect(page.getByRole('status')).toHaveText(`Added: ${title}`);
+  await expect(page.getByRole('listitem').filter({ hasText: title })).toContainText('Every weekday');
+
+  await page.goto('/chores?tab=manage');
+  const row = page.getByRole('listitem').filter({ hasText: title });
+  await expect(row).toContainText('Every weekday');
+  await row.getByRole('button', { name: /^Edit/ }).click();
+  const edit = page.getByRole('form', { name: `Edit ${title}` });
+  await expect(edit.getByLabel('Repeats')).toHaveValue('weekdays');
+  await edit.getByLabel('Repeats').selectOption('weekly');
+  await expect(edit.getByLabel('Every how many weeks')).toHaveValue('1');
+  for (const day of ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday']) await expect(edit.getByLabel(day, { exact: true })).toBeChecked();
+  for (const day of ['Saturday', 'Sunday']) await expect(edit.getByLabel(day, { exact: true })).not.toBeChecked();
+  await expect(edit.locator('[aria-live="polite"]')).toHaveText('Every weekday');
+  await edit.getByRole('button', { name: 'Cancel' }).click();
+});
+
 test('an admin adds a chore for a member, who completes it on their to-do list', async ({ page }, info) => {
   const member = await createMember(page, info, 'Chore kid');
   const title = `Feed the cat ${member.stamp}`;
