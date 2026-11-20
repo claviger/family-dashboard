@@ -2,7 +2,7 @@ import { Hono, type Context } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import type { z } from 'zod';
 import {
-  CardInputSchema, CategoryInputSchema, ClosingDateInputSchema, CSV_MAX_BYTES, ImportCommitInputSchema, MoveInputSchema, OverviewQuerySchema,
+  CardInputSchema, CategoryInputSchema, ClosingDateInputSchema, CSV_MAX_BYTES, ImportCommitInputSchema, ImportUpdateInputSchema, MoveInputSchema, OverviewQuerySchema,
   ResetInputSchema, RuleInputSchema, SPEND_MESSAGES, TransactionBatchSchema, TransactionPatchSchema,
 } from '../../../shared/spend.js';
 import {
@@ -16,7 +16,7 @@ import { banksView, loadBankAccounts, pickAccounts, refreshBank, removeBank } fr
 import {
   addClosingDate, cardStatements, createCard, deleteCard, deleteClosingDate, editClosingDate, listCards, setCardArchived, updateCard,
 } from './cards.js';
-import { cancelImport, commitImport, isPreviewId, listImports, previewImport, undoImport } from './imports.js';
+import { cancelImport, clearImportProfile, commitImport, importProfileOf, isPreviewId, listImports, previewImport, undoImport, updateImport } from './imports.js';
 import { deleteMapping, mappingView, saveMappings, setMapping } from './mappings.js';
 import { createCategory, deleteCategory, listCategories, moveCategory, renameCategory, setCategoryArchived } from './categories.js';
 import { applyRulesToPast, createRule, deleteRule, listRules, moveRule, updateRule } from './ruleSettings.js';
@@ -72,11 +72,14 @@ function query<T>(c: Context, schema: z.ZodType<T, unknown>): T {
  *   DELETE /rules/:id                    admin                                       → 204
  *   POST   /rules/:id/move               admin     { direction }                     → Rule[]
  *   POST   /rules/apply                  admin     apply every rule to past ones     → { applied }
- *   POST   /imports                      admin     multipart: cardId, file (5 MB)    → 201 ImportPreview
+ *   POST   /imports                      admin     multipart: cardId, file (5 MB)    → 201 ImportPreview (step columns or preview)
+ *   PUT    /imports/:id                  admin     { mapping } (64 KB, 30 a minute), the uploader's → ImportPreview (step preview)
  *   POST   /imports/:id/commit           admin     { include: line numbers }         → ImportResult
  *   DELETE /imports/:id                  admin     cancel the preview                → 204
  *   GET    /cards/:id/imports            admin     recent imports, newest first      → CsvImportRecord[]
  *   DELETE /cards/:id/imports/:importId  admin     undo: delete it and its rows      → { removed }
+ *   GET    /cards/:id/import-profile     admin     the card's saved columns          → { profile }
+ *   DELETE /cards/:id/import-profile     admin     clear them                        → 204
  *   GET    /mappings                     admin     Plaid category codes              → MappingView
  *   PATCH  /mappings                     admin     { changes: [{ code, categoryId (null deletes), expected? }] },
  *                                                  up to 500 (64 KB), all or nothing  → MappingView
@@ -208,6 +211,14 @@ export function spendRoutes(deps: AppDeps): Hono<AppEnv> {
     const preview = previewImport(deps, c.get('user')!.id, { cardId: Number(rawCard), fileName: file.name, bytes: new Uint8Array(await file.arrayBuffer()) });
     return c.json(preview, 201);
   });
+  // The columns step: a mapping is small; the 64 KB limit is the batches'. Each one reads the draft's
+  // rows again, so it has its own limit beside the uploads' (the final review's M3).
+  const columnsLimit = rateLimit({ windowMs: 60_000, max: 30, clock: deps.clock, key: (c) => `columns:${(c as Context<AppEnv>).get('user')!.id}` });
+  r.put('/imports/:id', requireAdmin, columnsLimit, batchSize, async (c) => {
+    const id = previewId(c);
+    const { mapping } = await parseJson(c, ImportUpdateInputSchema);
+    return c.json(updateImport(deps, c.get('user')!.id, id, mapping));
+  });
   r.post('/imports/:id/commit', requireAdmin, async (c) => {
     const id = previewId(c);
     const { include } = await parseJson(c, ImportCommitInputSchema);
@@ -222,6 +233,11 @@ export function spendRoutes(deps: AppDeps): Hono<AppEnv> {
     const id = cardId(c);
     const importId = idParam(c, SPEND_MESSAGES.importRecordNotFound, 'importId');
     return c.json(undoImport(deps, c.get('user')!.id, id, importId));
+  });
+  r.get('/cards/:id/import-profile', requireAdmin, (c) => c.json({ profile: importProfileOf(deps, cardId(c)) }));
+  r.delete('/cards/:id/import-profile', requireAdmin, (c) => {
+    clearImportProfile(deps, c.get('user')!.id, cardId(c));
+    return c.body(null, 204);
   });
 
   // The mapping editor works without Plaid: the codes are worth seeing either way (the design's "Routes").

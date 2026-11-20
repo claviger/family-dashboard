@@ -5,7 +5,7 @@ import { readMapped, type ReadRow } from './csvMapping.js';
 import {
   choicesFor, csvFlowKeys, dayEndBalances, defaultChoice, fileOrder, groupLabel, groupsOf, importableBalances, plaidTwins, readRows,
 } from './csvRows.js';
-import { findCsvTable } from './csvTable.js';
+import { findCsvTable } from '../../csv/table.js';
 import { BUILT_IN_FORMATS } from './importFormats.js';
 
 // Synthetic files (src/server/test/importCsv.ts). Today is 2026-11-15.

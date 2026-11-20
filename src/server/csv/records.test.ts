@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { CSV_ERRORS, csvRecords, parseCsv } from './csv.js';
+import { CSV_ERRORS, csvRecords, parseCsv } from './records.js';
 
 const fields = (text: string) => parseCsv(text).map((r) => r.fields ?? r.error);
 

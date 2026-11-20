@@ -3,7 +3,7 @@ import { sql } from 'drizzle-orm';
 import { check, index, integer, primaryKey, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
 import type { PendingCalendar, StoredEvent } from '../../shared/calendar.js';
 import type { ChoreSchedule } from '../../shared/chores.js';
-import type { PreviewRow } from '../../shared/spend.js';
+import { SPEND_IMPORT_FORMATS, type CardMapping, type PreviewRow, type SpendImportDraftPlan } from '../../shared/spend.js';
 import { PLAID_PURPOSES } from '../../shared/plaid.js';
 import {
   SAVINGS_ACCOUNT_KINDS, SAVINGS_ACCOUNT_SOURCES, SAVINGS_BALANCE_SOURCES, SAVINGS_FLOW_KINDS, SAVINGS_FLOW_SOURCES, SAVINGS_IMPORT_FORMATS,
@@ -852,14 +852,18 @@ export const csvImports = sqliteTable(
     rowCount: integer('row_count').notNull(),
     importedCount: integer('imported_count').notNull(),
     skippedCount: integer('skipped_count').notNull(),
+    /** The format it was read with (the generic import plan, decision 12): `bofa_credit` or `custom`; null, from before 0015, reads as `bofa_credit`. */
+    format: text('format', { enum: SPEND_IMPORT_FORMATS }),
   },
   (t) => [index('csv_imports_card_idx').on(t.cardId, t.uploadedAt)],
 );
 
 /**
- * An uploaded CSV waiting for its admin to review and save it (spec §12.13): the parsed rows, not
- * the file. Bound to the admin who uploaded it, under a random id, and gone after an hour, when
- * it's saved or cancelled, or when its card or admin is deleted.
+ * An uploaded CSV waiting for its admin (spec §12.13, the generic import design): the table's header
+ * and cells and the mapping so far (`plan`), and the rows as they'd import once it's mapped
+ * (`rows`). Never the file. Bound to the admin who uploaded it, under a random id, and gone after
+ * an hour, when it's saved or cancelled, or when its card or admin is deleted. A preview from before
+ * 0015 has no plan and is treated as expired (plan decision 4).
  */
 export const csvImportPreviews = sqliteTable('csv_import_previews', {
   id: text('id').primaryKey(),
@@ -868,9 +872,29 @@ export const csvImportPreviews = sqliteTable('csv_import_previews', {
   fileName: text('file_name'),
   fileSha256: text('file_sha256').notNull(),
   rows: text('rows', { mode: 'json' }).$type<PreviewRow[]>().notNull(),
+  plan: text('plan', { mode: 'json' }).$type<SpendImportDraftPlan>(),
   createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
   expiresAt: integer('expires_at', { mode: 'timestamp_ms' }).notNull(),
 });
+
+/**
+ * A card's saved columns (the generic import design, "Saved per card"; plan decision 13): the
+ * header they were made for (column names only) and the mapping. Applied to the next file whose
+ * header matches exactly and that the mapping reads. One per card, gone with it.
+ */
+export const spendImportProfiles = sqliteTable(
+  'spend_import_profiles',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    cardId: integer('card_id').notNull().references(() => cards.id, { onDelete: 'cascade' }),
+    header: text('header', { mode: 'json' }).$type<string[]>().notNull(),
+    mapping: text('mapping', { mode: 'json' }).$type<CardMapping>().notNull(),
+    updatedByUserId: integer('updated_by_user_id').notNull().references(() => users.id),
+    createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
+    updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
+  },
+  (t) => [uniqueIndex('spend_import_profiles_card_unique').on(t.cardId)],
+);
 
 /**
  * Card transactions (spec §12, §18, and the research's "Columns to create now"). Amounts are whole
@@ -990,6 +1014,7 @@ export type CategoryRow = typeof categories.$inferSelect;
 export type RuleRow = typeof rules.$inferSelect;
 export type TransactionRow = typeof transactions.$inferSelect;
 export type CsvImportPreviewRow = typeof csvImportPreviews.$inferSelect;
+export type SpendImportProfileRow = typeof spendImportProfiles.$inferSelect;
 export type SavingsAccountRow = typeof savingsAccounts.$inferSelect;
 export type SavingsBalanceRow = typeof savingsBalances.$inferSelect;
 export type SavingsFlowRow = typeof savingsFlows.$inferSelect;

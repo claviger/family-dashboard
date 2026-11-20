@@ -2,14 +2,17 @@ import { eq, sql } from 'drizzle-orm';
 import pino from 'pino';
 import { describe, expect, it } from 'vitest';
 import {
-  IMPORT_REPLACED_ROW, POSSIBLE_DUPLICATE, SPEND_MESSAGES, startsTicked, type Card, type CsvImportRecord, type ImportPreview, type ImportResult, type SpendSummary,
+  IMPORT_REPLACED_ROW, POSSIBLE_DUPLICATE, SPEND_MESSAGES, startsTicked, type Card, type CardMapping, type CsvImportRecord, type ImportPreview, type ImportResult, type SpendSummary,
 } from '../../../shared/spend.js';
-import { csvImportPreviews, csvImports, transactions } from '../../db/schema.js';
+import { CSV_TABLE_MESSAGES } from '../../csv/table.js';
+import { csvImportPreviews, csvImports, spendImportProfiles, transactions } from '../../db/schema.js';
 import { bofaCsv, bytes, reference } from '../../test/bofaCsv.js';
+import { DEBIT_CREDIT_SAMPLE, debitCreditCsv, signedCsv } from '../../test/cardCsv.js';
 import { addUser, call, cookieFor, makeTestApp, TEST_BASE_URL, type TestApp } from '../../test/helpers.js';
-import { addCard, addTransaction, categoryId, spendUser } from '../../test/spendFixtures.js';
-import { BOFA_MESSAGES } from './bofa.js';
-import { ALREADY_IMPORTED, PREVIEW_TTL_MS, previewImport } from './imports.js';
+import { addCard, addCsvImport, addTransaction, categoryId, spendUser } from '../../test/spendFixtures.js';
+import { BOFA_FORMAT, BOFA_HEADER, BOFA_MESSAGES } from './bofa.js';
+import { isRowKey, rowKey } from './cardCsv.js';
+import { ALREADY_IMPORTED, clearImportProfile, commitImport, importProfileOf, listImports, PREVIEW_TTL_MS, previewImport, updateImport } from './imports.js';
 import { spendPanel } from './index.js';
 
 const P = '/api/panels/spend';
@@ -36,6 +39,11 @@ const payment = { date: '11/05/2026', reference: reference(7, 3), payee: 'PAYMEN
 const refund = { date: '11/06/2026', reference: reference(7, 4), payee: 'REI #12', address: 'BERKELEY CA', amount: '25.00' };
 const tempCredit = { date: '', reference: 'TEMPRET', payee: 'REI #12', address: '', amount: '10.00' };
 const FILE = bofaCsv([coffee, netflix, payment, refund, tempCredit]);
+
+// SYNTHETIC files from another issuer (src/server/test/cardCsv.ts): Debit and Credit, D/M/YYYY, no reference numbers.
+const GENERIC = debitCreditCsv(DEBIT_CREDIT_SAMPLE);
+const DEBIT_CREDIT: CardMapping = { date: { column: 0, format: 'dmy' }, amount: { kind: 'split', charges: 3, credits: 4 }, description: 1, reference: null, address: null };
+const draft = (t: TestApp, userId: number, cardId: number, text: string, fileName: string | null = 'activity.csv') => previewImport(t, userId, { cardId, fileName, bytes: bytes(text) });
 
 function setup(opts: { logger?: pino.Logger } = {}) {
   const t = makeTestApp(opts);
@@ -92,11 +100,15 @@ describe('CSV import: the preview (spec §12.13)', () => {
     expect(preview.expiresAt).toBe(new Date(t.clock.now().getTime() + PREVIEW_TTL_MS).toISOString());
   });
 
-  it('refuses the checking export and any other file with a plain message', async () => {
+  it("maps a file it doesn't know instead of refusing it, says the checking export belongs in Savings, and refuses a file with no table", async () => {
     const { t, admin, card } = setup();
-    expect(await json(await upload(t, admin.cookie, card.id, 'Description,,Summary Amt.\r\n'), 400)).toEqual({ error: { code: 'validation', message: BOFA_MESSAGES.checking } });
-    expect(await json(await upload(t, admin.cookie, card.id, 'Date,Payee,Amount\r\n'), 400)).toEqual({ error: { code: 'validation', message: BOFA_MESSAGES.notBofa } });
-    expect(t.db.select().from(csvImportPreviews).all()).toEqual([]);
+    const checking = 'Description,,Summary Amt.\r\nBeginning balance as of 10/01/2026,,"1,000.00"\r\n\r\nDate,Description,Amount,Running Bal.\r\n';
+    const columns = await json<ImportPreview>(await upload(t, admin.cookie, card.id, checking), 201);
+    expect(columns).toMatchObject({ step: 'columns', format: 'custom', prefilled: 'guess', mapping: null, rows: [], dateRange: null, warnings: [] });
+    expect(columns.columns).toMatchObject({ header: ['Description', '', 'Summary Amt.'], hint: SPEND_MESSAGES.importCheckingHint, suggested: null, problem: null });
+    expect(await json(await upload(t, admin.cookie, card.id, 'Date,Payee,Amount\r\n'), 400)).toEqual({ error: { code: 'validation', message: CSV_TABLE_MESSAGES.noTable } });
+    // The refusal left the draft as it was.
+    expect(t.db.select().from(csvImportPreviews).all().map((p) => p.id)).toEqual([columns.id]);
   });
 
   it('flags likely duplicates of stored transactions, and rows whose reference number is already stored, deleted ones included', async () => {
@@ -250,6 +262,18 @@ describe('CSV import: the preview (spec §12.13)', () => {
     expect(t.db.select().from(csvImportPreviews).all()).toEqual([]);
   });
 
+  it('checkpoints the WAL each time it prunes, so a deleted draft does not linger in old WAL frames', async () => {
+    const { t } = setup();
+    const pragmas: string[] = [];
+    const pragma = t.sqlite.pragma.bind(t.sqlite);
+    t.sqlite.pragma = ((source: string, options?: Parameters<typeof pragma>[1]) => {
+      pragmas.push(source);
+      return pragma(source, options);
+    }) as typeof t.sqlite.pragma;
+    await spendPanel.jobs!(t)[0]!.run();
+    expect(pragmas).toContain('wal_checkpoint(TRUNCATE)');
+  });
+
   it('cancels a preview', async () => {
     const { t, admin, card } = setup();
     const { id } = await json<ImportPreview>(await upload(t, admin.cookie, card.id, FILE), 201);
@@ -351,12 +375,12 @@ describe('CSV import: saving', () => {
     const { t, admin, card } = setup({ logger: pino({ level: 'debug' }, { write: (line: string) => void lines.push(line) }) });
     const { id } = await json<ImportPreview>(await upload(t, admin.cookie, card.id, FILE), 201);
     await call(t.app, 'POST', `${P}/imports/${id}/commit`, { cookie: admin.cookie, body: { include: [2, 3, 4, 5] } });
+    // Another issuer's layout is a draft at the columns step now; a file that isn't text is refused.
     await upload(t, admin.cookie, card.id, 'Posted Date,Reference Number,Payee,Amount\r\n11/02/2026,1,SECRET SHOP,-1.00\r\n');
+    await upload(t, admin.cookie, card.id, new Uint8Array([0xff, 0xfe, 0x00]));
     const log = lines.join('\n');
-    expect(log).toContain('spend csv preview');
-    expect(log).toContain('spend csv imported');
-    expect(log).toContain('spend csv refused');
-    for (const text of ['BLUE BOTTLE', 'NETFLIX', 'OAKLAND', '12.74', '1274', coffee.reference, 'SECRET', 'currentTransaction']) expect(log).not.toContain(text);
+    for (const msg of ['spend csv draft', 'spend csv preview', 'spend csv imported', 'spend csv refused']) expect(log).toContain(msg);
+    for (const text of ['BLUE BOTTLE', 'NETFLIX', 'OAKLAND', '12.74', '1274', coffee.reference, 'SECRET', 'currentTransaction', 'Payee', 'Reference Number']) expect(log).not.toContain(text);
   });
 });
 
@@ -537,5 +561,382 @@ describe('CSV import: undo (review C-I1)', () => {
     const log = lines.join('\n');
     expect(log).toContain('spend csv import undone');
     for (const text of ['BLUE BOTTLE', 'currentTransaction', coffee.reference]) expect(log).not.toContain(text);
+  });
+});
+
+describe('CSV import: the columns step (the generic import design)', () => {
+  it('takes a Bank of America file straight to the preview, read with its built-in format', () => {
+    const { t, admin, card } = setup();
+    const p = draft(t, admin.id, card.id, FILE, 'currentTransaction_1234.csv');
+    expect(p).toMatchObject({ step: 'preview', format: 'bofa_credit', prefilled: 'builtin', mapping: BOFA_FORMAT.mapping });
+    expect(p.columns).toMatchObject({ header: [...BOFA_HEADER], rowCount: 5, trailingSkipped: 0, suggested: null, problem: null, hint: null });
+    expect(p.columns.sample).toHaveLength(5);
+  });
+
+  it("lists a Bank of America file's truncated final row as unreadable: its files have no footer", () => {
+    const { t, admin, card } = setup();
+    const p = draft(t, admin.id, card.id, `${FILE}11/07/2026,${reference(7, 9)},"TRUNCATED SHO`);
+    expect(p).toMatchObject({ step: 'preview', columns: { rowCount: 6, trailingSkipped: 0 } });
+    expect(p.rows.at(-1)).toMatchObject({ line: 7, status: 'unreadable', payee: null });
+  });
+
+  it("says how many lines after another issuer's table it skipped, a truncated final row included, and never what they say", () => {
+    const { t, admin, card } = setup();
+    const p = draft(t, admin.id, card.id, `${GENERIC}18/10/2026,TRUNCATED SHO`);
+    expect(p).toMatchObject({ step: 'columns', columns: { rowCount: 6, trailingSkipped: 1 } });
+    expect(JSON.stringify(p)).not.toContain('TRUNCATED');
+  });
+
+  it("opens the columns step for another issuer's file: a guess, the first 8 rows, and each column's date formats", () => {
+    const { t, admin, card } = setup();
+    const p = draft(t, admin.id, card.id, debitCreditCsv([...DEBIT_CREDIT_SAMPLE, ...DEBIT_CREDIT_SAMPLE]));
+    expect(p).toMatchObject({ step: 'columns', format: 'custom', prefilled: 'guess', mapping: null, rows: [], dateRange: null, warnings: [] });
+    expect(p.columns.suggested).toEqual(DEBIT_CREDIT);
+    expect(p.columns.sample).toHaveLength(8);
+    expect(p.columns.sample[0]).toEqual(['13/10/2026', 'CORNER CAFE 0042', 'Dining', '4.50', '']);
+    expect(p.columns.rowCount).toBe(12);
+    expect(p.columns.dateFormats[0]).toEqual(['dmy']);
+    // Nothing can be imported before the columns are chosen.
+    expect(() => commitImport(t, admin.id, p.id, [2])).toThrow(SPEND_MESSAGES.importNotReady);
+  });
+
+  it("reads the rows with the columns chosen, and refuses columns that can't read the file, keeping the draft", () => {
+    const { t, admin, card } = setup();
+    const p = draft(t, admin.id, card.id, GENERIC);
+    expect(() => updateImport(t, admin.id, p.id, { ...DEBIT_CREDIT, date: { column: 0, format: 'mdy' } })).toThrow(SPEND_MESSAGES.importBadDate(2, 'M/D/YYYY'));
+    expect(() => updateImport(t, admin.id, p.id, { ...DEBIT_CREDIT, description: 0 })).toThrow(SPEND_MESSAGES.importSameColumn);
+    expect(() => updateImport(t, admin.id, p.id, { ...DEBIT_CREDIT, address: 9 })).toThrow(SPEND_MESSAGES.importColumnMissing);
+    expect(t.db.select().from(csvImportPreviews).get()!.plan!.mapping).toBeNull();
+    const read = updateImport(t, admin.id, p.id, DEBIT_CREDIT);
+    expect(read).toMatchObject({ step: 'preview', format: 'custom', prefilled: 'guess', mapping: DEBIT_CREDIT, dateRange: { from: '2026-10-13', to: '2026-10-17' } });
+    expect(read.rows.map((r) => [r.line, r.status, r.date, r.payee, r.amountCents])).toEqual([
+      [2, 'new', '2026-10-13', 'CORNER CAFE 0042', 450],
+      [3, 'new', '2026-10-14', 'BOOK NOOK', 102499],
+      [4, 'new', '2026-10-15', 'CORNER CAFE 0042', 450],
+      [5, 'new', '2026-10-15', 'CORNER CAFE 0042', 450],
+      [6, 'new', '2026-10-16', 'ONLINE PAYMENT THANK YOU', -50000],
+      [7, 'new', '2026-10-17', 'HARDWARE BARN #12', -1200],
+    ]);
+    expect(read.rows.every((r) => isRowKey(r.reference))).toBe(true);
+  });
+
+  it('saves the columns on the card at Import, and the next file with the same header goes straight to the preview', () => {
+    const { t, admin, card } = setup();
+    const first = draft(t, admin.id, card.id, debitCreditCsv(DEBIT_CREDIT_SAMPLE.slice(0, 3)));
+    updateImport(t, admin.id, first.id, DEBIT_CREDIT);
+    expect(commitImport(t, admin.id, first.id, [2, 3, 4])).toEqual({ imported: 3, skipped: 0 });
+    expect(t.db.select().from(csvImports).get()).toMatchObject({ format: 'custom', importedCount: 3 });
+    expect(t.db.select().from(spendImportProfiles).get()).toMatchObject({
+      cardId: card.id, header: ['Transaction Date', 'Description', 'Category', 'Debit', 'Credit'], mapping: DEBIT_CREDIT, updatedByUserId: admin.id,
+    });
+    const next = draft(t, admin.id, card.id, GENERIC);
+    expect(next).toMatchObject({ step: 'preview', prefilled: 'profile', format: 'custom', mapping: DEBIT_CREDIT });
+    expect(next.rows.map((r) => r.status)).toEqual(['already_imported', 'already_imported', 'already_imported', 'new', 'new', 'new']);
+    // Another card, or another header, doesn't use them.
+    const other = addCard(t, { nickname: 'Other', mask: null });
+    expect(draft(t, admin.id, other.id, GENERIC)).toMatchObject({ step: 'columns', prefilled: 'guess' });
+    expect(draft(t, admin.id, card.id, signedCsv([{ date: '2026-11-02', merchant: 'SHOP', amount: '4.50' }]))).toMatchObject({ step: 'columns', prefilled: 'guess' });
+  });
+
+  it('replaces the saved columns at the next Import: one per card', () => {
+    const { t, admin, card } = setup();
+    const first = draft(t, admin.id, card.id, GENERIC);
+    updateImport(t, admin.id, first.id, DEBIT_CREDIT);
+    commitImport(t, admin.id, first.id, [2]);
+    // The next file comes in with the saved columns; the admin also maps Category as the location.
+    const next = draft(t, admin.id, card.id, GENERIC);
+    expect(next.prefilled).toBe('profile');
+    const changed = updateImport(t, admin.id, next.id, { ...DEBIT_CREDIT, address: 2 });
+    expect(changed.rows[1]).toMatchObject({ address: 'Shopping' });
+    commitImport(t, admin.id, next.id, startsTicked(changed.rows));
+    expect(t.db.select().from(spendImportProfiles).all()).toEqual([expect.objectContaining({ cardId: card.id, mapping: { ...DEBIT_CREDIT, address: 2 } })]);
+  });
+
+  it("opens the columns step with the saved columns filled in, and why, when they don't fit the file", () => {
+    const { t, admin, card } = setup();
+    const first = draft(t, admin.id, card.id, GENERIC);
+    updateImport(t, admin.id, first.id, DEBIT_CREDIT);
+    commitImport(t, admin.id, first.id, [2]);
+    // Saved for D/M/YYYY; this file's date has a month of 20 that way round.
+    const p = draft(t, admin.id, card.id, debitCreditCsv([{ date: '10/20/2026', description: 'CORNER CAFE 0042', debit: '4.50' }]));
+    expect(p).toMatchObject({ step: 'columns', prefilled: 'profile', mapping: null, rows: [] });
+    expect(p.columns).toMatchObject({ suggested: DEBIT_CREDIT, problem: SPEND_MESSAGES.importSavedDoesntFit(SPEND_MESSAGES.importBadDate(2, 'D/M/YYYY')) });
+  });
+
+  it('puts saved columns ahead of the built-in format, and Clear goes back to it', () => {
+    const { t, admin, card } = setup();
+    const custom: CardMapping = { ...BOFA_FORMAT.mapping, amount: { kind: 'signed', column: 4, purchasesNegative: false } };
+    const p = draft(t, admin.id, card.id, FILE);
+    const read = updateImport(t, admin.id, p.id, custom);
+    expect(read).toMatchObject({ format: 'custom', mapping: custom });
+    expect(read.rows[0]!.amountCents).toBe(-1274);
+    commitImport(t, admin.id, p.id, [2]);
+    expect(draft(t, admin.id, card.id, FILE)).toMatchObject({ step: 'preview', prefilled: 'profile', format: 'custom', mapping: custom });
+    expect(importProfileOf(t, card.id)).toMatchObject({ cardId: card.id, format: 'custom', header: [...BOFA_HEADER], mapping: custom, updatedBy: 'admin' });
+    clearImportProfile(t, admin.id, card.id);
+    expect(importProfileOf(t, card.id)).toBeNull();
+    expect(() => clearImportProfile(t, admin.id, card.id)).toThrow(SPEND_MESSAGES.importProfileNotFound);
+    expect(draft(t, admin.id, card.id, FILE)).toMatchObject({ prefilled: 'builtin', format: 'bofa_credit' });
+    expect(() => importProfileOf(t, 999)).toThrow(SPEND_MESSAGES.cardNotFound);
+  });
+
+  it('saves a built-in import as Bank of America format, and lists an import from before 0015 as one too', () => {
+    const { t, admin, card } = setup();
+    addCsvImport(t, card.id);
+    t.clock.advance(60_000);
+    const p = draft(t, admin.id, card.id, FILE);
+    commitImport(t, admin.id, p.id, [2]);
+    t.clock.advance(60_000);
+    const g = draft(t, admin.id, card.id, GENERIC);
+    updateImport(t, admin.id, g.id, DEBIT_CREDIT);
+    commitImport(t, admin.id, g.id, [2]);
+    expect(listImports(t, card.id).map((i) => i.format)).toEqual(['custom', 'bofa_credit', 'bofa_credit']);
+    expect(t.db.select().from(csvImports).all().map((i) => i.format)).toEqual([null, 'bofa_credit', 'custom']);
+  });
+
+  it('treats a preview from before migration 0015 as expired', () => {
+    const { t, admin, card } = setup();
+    const now = t.clock.now();
+    const id = 'A'.repeat(22);
+    t.db.insert(csvImportPreviews).values({ id, userId: admin.id, cardId: card.id, fileName: null, fileSha256: '0'.repeat(64), rows: [], plan: null, createdAt: now, expiresAt: new Date(now.getTime() + PREVIEW_TTL_MS) }).run();
+    expect(() => commitImport(t, admin.id, id, [2])).toThrow(SPEND_MESSAGES.importNotFound);
+    expect(() => updateImport(t, admin.id, id, DEBIT_CREDIT)).toThrow(SPEND_MESSAGES.importNotFound);
+  });
+});
+
+describe('CSV import: the columns step over HTTP', () => {
+  const put = (t: TestApp, cookie: string | undefined, id: string, body: unknown, opts: { csrf?: boolean } = {}) => call(t.app, 'PUT', `${P}/imports/${id}`, { cookie, body, ...opts });
+  const profilePath = (cardId: number | string) => `${P}/cards/${cardId}/import-profile`;
+
+  it("is for admins with the Spend panel, behind the CSRF check, and a draft is its uploader's", async () => {
+    const { t, admin, card } = setup();
+    const member = spendUser(t, { role: 'member' });
+    const otherAdmin = cookieFor(t.db, t.clock, addUser(t.db, t.clock, { email: 'a2@example.com', role: 'admin', panels: ['todo'] }));
+    const other = spendUser(t, { role: 'admin', email: 'other@example.com' });
+    const { id } = await json<ImportPreview>(await upload(t, admin.cookie, card.id, GENERIC), 201);
+    expect((await put(t, undefined, id, { mapping: DEBIT_CREDIT })).status).toBe(401);
+    for (const cookie of [member.cookie, otherAdmin]) {
+      expect((await put(t, cookie, id, { mapping: DEBIT_CREDIT })).status).toBe(403);
+      expect((await call(t.app, 'GET', profilePath(card.id), { cookie })).status).toBe(403);
+      expect((await call(t.app, 'DELETE', profilePath(card.id), { cookie })).status).toBe(403);
+    }
+    expect((await put(t, admin.cookie, id, { mapping: DEBIT_CREDIT }, { csrf: false })).status).toBe(403);
+    expect((await call(t.app, 'DELETE', profilePath(card.id), { cookie: admin.cookie, csrf: false })).status).toBe(403);
+    expect(await json(await put(t, other.cookie, id, { mapping: DEBIT_CREDIT }), 404)).toEqual({ error: { code: 'not_found', message: SPEND_MESSAGES.importNotFound } });
+    expect((await put(t, admin.cookie, 'not-an-id', { mapping: DEBIT_CREDIT })).status).toBe(404);
+    expect(t.db.select().from(csvImportPreviews).get()!.plan!.mapping).toBeNull();
+  });
+
+  it("answers the preview for columns that read the file and a plain message for columns that don't; Import saves them, and they can be read and cleared", async () => {
+    const { t, admin, card } = setup();
+    const { id } = await json<ImportPreview>(await upload(t, admin.cookie, card.id, GENERIC), 201);
+    expect(await json(await put(t, admin.cookie, id, { mapping: { ...DEBIT_CREDIT, date: { column: 0, format: 'mdy' } } }), 400)).toEqual({
+      error: { code: 'validation', message: SPEND_MESSAGES.importBadDate(2, 'M/D/YYYY') },
+    });
+    expect(await json(await put(t, admin.cookie, id, { mapping: { ...DEBIT_CREDIT, description: -1 } }), 400)).toEqual({ error: { code: 'validation', message: 'Choose a column.' } });
+    expect((await put(t, admin.cookie, id, {})).status).toBe(400);
+    const preview = await json<ImportPreview>(await put(t, admin.cookie, id, { mapping: DEBIT_CREDIT }));
+    expect(preview).toMatchObject({ step: 'preview', mapping: DEBIT_CREDIT });
+    expect(await json(await call(t.app, 'POST', `${P}/imports/${id}/commit`, { cookie: admin.cookie, body: { include: startsTicked(preview.rows) } }))).toEqual({ imported: 6, skipped: 0 });
+
+    const saved = await json<{ profile: unknown }>(await call(t.app, 'GET', profilePath(card.id), { cookie: admin.cookie }));
+    expect(saved).toEqual({
+      profile: { cardId: card.id, format: 'custom', header: ['Transaction Date', 'Description', 'Category', 'Debit', 'Credit'], mapping: DEBIT_CREDIT, updatedAt: t.clock.now().toISOString(), updatedBy: 'admin' },
+    });
+    expect((await call(t.app, 'DELETE', profilePath(card.id), { cookie: admin.cookie })).status).toBe(204);
+    expect(await json(await call(t.app, 'GET', profilePath(card.id), { cookie: admin.cookie }))).toEqual({ profile: null });
+    expect(await json(await call(t.app, 'DELETE', profilePath(card.id), { cookie: admin.cookie }), 404)).toEqual({ error: { code: 'not_found', message: SPEND_MESSAGES.importProfileNotFound } });
+    expect((await call(t.app, 'GET', profilePath(999), { cookie: admin.cookie })).status).toBe(404);
+    expect((await call(t.app, 'GET', profilePath('abc'), { cookie: admin.cookie })).status).toBe(404);
+  });
+
+  it('refuses columns for a draft that expired, or a card archived since the upload', async () => {
+    const { t, admin, card } = setup();
+    const first = await json<ImportPreview>(await upload(t, admin.cookie, card.id, GENERIC), 201);
+    await call(t.app, 'POST', `${P}/cards/${card.id}/archive`, { cookie: admin.cookie });
+    expect(await json(await put(t, admin.cookie, first.id, { mapping: DEBIT_CREDIT }), 400)).toEqual({ error: { code: 'validation', message: SPEND_MESSAGES.cardArchived } });
+    await call(t.app, 'POST', `${P}/cards/${card.id}/unarchive`, { cookie: admin.cookie });
+    t.clock.advance(PREVIEW_TTL_MS);
+    expect((await put(t, admin.cookie, first.id, { mapping: DEBIT_CREDIT })).status).toBe(404);
+  });
+
+  it('refuses a columns body over 64 KB', async () => {
+    const { t, admin, card } = setup();
+    const { id } = await json<ImportPreview>(await upload(t, admin.cookie, card.id, GENERIC), 201);
+    expect(await json(await put(t, admin.cookie, id, { mapping: DEBIT_CREDIT, padding: 'x'.repeat(70_000) }), 413)).toEqual({ error: { code: 'validation', message: SPEND_MESSAGES.batchTooBig } });
+  });
+
+  it('takes 20 uploads a minute per admin, as before, and the columns step is not counted', async () => {
+    const { t, admin, card } = setup();
+    for (let n = 0; n < 19; n++) expect((await upload(t, admin.cookie, card.id, FILE)).status).toBe(201);
+    const { id } = await json<ImportPreview>(await upload(t, admin.cookie, card.id, GENERIC), 201);
+    for (let n = 0; n < 3; n++) expect((await put(t, admin.cookie, id, { mapping: DEBIT_CREDIT })).status).toBe(200);
+    expect((await upload(t, admin.cookie, card.id, FILE)).status).toBe(429);
+    t.clock.advance(60_000);
+    expect((await upload(t, admin.cookie, card.id, FILE)).status).toBe(201);
+  });
+});
+
+describe('CSV import: files without a reference number (the generic import design)', () => {
+  /** Uploads `text` for the card, maps it as Debit and Credit unless saved columns did, and saves the rows that start ticked. */
+  function importGeneric(t: TestApp, userId: number, cardId: number, text: string): ImportResult {
+    const p = draft(t, userId, cardId, text);
+    const read = p.step === 'columns' ? updateImport(t, userId, p.id, DEBIT_CREDIT) : p;
+    return commitImport(t, userId, p.id, startsTicked(read.rows));
+  }
+
+  it('re-importing an overlapping file adds only the rows not there yet, identical same-day rows included', () => {
+    const { t, admin, card } = setup();
+    expect(importGeneric(t, admin.id, card.id, debitCreditCsv(DEBIT_CREDIT_SAMPLE.slice(0, 3)))).toEqual({ imported: 3, skipped: 0 });
+    // The second identical coffee on the 15th is new; the first is already here.
+    const later = draft(t, admin.id, card.id, GENERIC);
+    expect(later.rows.map((r) => [r.line, r.status])).toEqual([[2, 'already_imported'], [3, 'already_imported'], [4, 'already_imported'], [5, 'new'], [6, 'new'], [7, 'new']]);
+    expect(commitImport(t, admin.id, later.id, startsTicked(later.rows))).toEqual({ imported: 3, skipped: 3 });
+    const stored = t.db.select().from(transactions).all();
+    expect(stored).toHaveLength(6);
+    expect(stored.every((r) => isRowKey(r.csvReference))).toBe(true);
+    expect(new Set(stored.map((r) => r.csvReference)).size).toBe(6);
+    expect(draft(t, admin.id, card.id, GENERIC).rows.every((r) => r.status === 'already_imported')).toBe(true);
+  });
+
+  it("tests a key-only row as one without a reference number: it's a likely duplicate of a stored row that has one", () => {
+    const { t, admin, card } = setup();
+    const book = addTransaction(t, card.id, { date: '2026-10-14', amountCents: 102499, rawName: 'BOOK NOOK', csvReference: reference(30, 1) });
+    const p = draft(t, admin.id, card.id, GENERIC);
+    const read = updateImport(t, admin.id, p.id, DEBIT_CREDIT);
+    expect(read.rows[1]).toMatchObject({ line: 3, status: 'duplicate', reason: null, duplicateOf: { id: book.id } });
+  });
+
+  it("tests a stored key-only row the same way: a Bank of America row is its likely duplicate, not a possible one", () => {
+    const { t, admin, card } = setup();
+    const keyed = addTransaction(t, card.id, { date: '2026-11-02', amountCents: 1274, rawName: 'BLUE BOTTLE COFFEE', csvReference: rowKey(card.id, '2026-11-02', 1274, 'BLUE BOTTLE COFFEE', 0) });
+    const p = draft(t, admin.id, card.id, bofaCsv([coffee]));
+    expect(p.rows[0]).toMatchObject({ status: 'duplicate', reason: null, duplicateOf: { id: keyed.id } });
+  });
+
+  it('keeps a key-only row removed as a duplicate skipped on re-import, also after its import is undone', async () => {
+    const { t, admin, card } = setup();
+    const file = debitCreditCsv(DEBIT_CREDIT_SAMPLE.slice(0, 3));
+    importGeneric(t, admin.id, card.id, file);
+    const [imp] = t.db.select().from(csvImports).all();
+    const csvBook = t.db.select().from(transactions).all().find((r) => r.date === '2026-10-14')!;
+    // The bank's copy arrives; the admin removes the CSV row as its duplicate. (The book, not a
+    // coffee: a Plaid coffee would also be a likely duplicate of the coffee two days later.)
+    addTransaction(t, card.id, { source: 'plaid', plaidTransactionId: 'p-synthetic-1', date: '2026-10-14', amountCents: 102499, merchant: 'Book Nook', rawName: 'BOOK NOOK' });
+    expect((await call(t.app, 'POST', `${P}/transactions/${csvBook.id}/remove-duplicate`, { cookie: admin.cookie })).status).toBe(200);
+    expect(draft(t, admin.id, card.id, file).rows[1]!.status).toBe('already_imported');
+    // Undo deletes the two live rows and keeps the removed one, holding its key.
+    expect(await json(await call(t.app, 'DELETE', `${P}/cards/${card.id}/imports/${imp!.id}`, { cookie: admin.cookie }))).toEqual({ removed: 2 });
+    expect(t.db.select().from(transactions).where(eq(transactions.id, csvBook.id)).get()).toMatchObject({ deletedReason: 'duplicate', csvImportId: null, csvReference: csvBook.csvReference });
+    expect(draft(t, admin.id, card.id, file).rows.map((r) => r.status)).toEqual(['new', 'already_imported', 'new']);
+  });
+});
+
+describe('CSV import: saved columns and the built-in format (the Batch B review)', () => {
+  // Saved for a Bank of America header, but day first: every day in FILE fits that too (2, 3, 5, 6 November read as 11 February and on).
+  const DAY_FIRST: CardMapping = { ...BOFA_FORMAT.mapping, date: { column: 0, format: 'dmy' } };
+  const saveDayFirst = (t: TestApp, userId: number, cardId: number) => {
+    const p = draft(t, userId, cardId, FILE);
+    updateImport(t, userId, p.id, DAY_FIRST);
+    commitImport(t, userId, p.id, [2]);
+  };
+  // 15 November: not a day-first date, so the saved columns don't fit.
+  const LATER = bofaCsv([{ ...coffee, date: '11/15/2026', reference: reference(7, 20) }]);
+
+  it("uses Bank of America's format when the saved columns don't fit its file, says so, and keeps the saved columns at Import", () => {
+    const { t, admin, card } = setup();
+    saveDayFirst(t, admin.id, card.id);
+    const p = draft(t, admin.id, card.id, LATER);
+    expect(p).toMatchObject({ step: 'preview', prefilled: 'builtin', format: 'bofa_credit', mapping: BOFA_FORMAT.mapping, columns: { problem: SPEND_MESSAGES.importSavedNotUsed } });
+    expect(p.rows[0]).toMatchObject({ status: 'new', date: '2026-11-15' });
+    commitImport(t, admin.id, p.id, [2]);
+    expect(t.db.select().from(csvImports).all().at(-1)).toMatchObject({ format: 'bofa_credit' });
+    expect(importProfileOf(t, card.id)).toMatchObject({ format: 'custom', mapping: DAY_FIRST });
+  });
+
+  it('replaces the saved columns once the admin chooses columns, the built-in ones included', () => {
+    const { t, admin, card } = setup();
+    saveDayFirst(t, admin.id, card.id);
+    const p = draft(t, admin.id, card.id, LATER);
+    const chosen = updateImport(t, admin.id, p.id, BOFA_FORMAT.mapping);
+    expect(chosen).toMatchObject({ prefilled: 'builtin', format: 'bofa_credit', columns: { problem: null } });
+    commitImport(t, admin.id, p.id, [2]);
+    expect(importProfileOf(t, card.id)).toMatchObject({ format: 'bofa_credit', mapping: BOFA_FORMAT.mapping });
+  });
+
+  it("takes Bank of America's own columns back at PUT with its odd rows listed, as at upload, and records the import as its format", () => {
+    const { t, admin, card } = setup();
+    const odd = bofaCsv([coffee, { ...netflix, date: '13/01/2026' }]);
+    const p = draft(t, admin.id, card.id, odd);
+    expect(p.rows.map((r) => r.status)).toEqual(['new', 'unreadable']);
+    // A cell-level check would refuse line 3's date; the built-in format lists it instead.
+    const back = updateImport(t, admin.id, p.id, BOFA_FORMAT.mapping);
+    expect(back).toMatchObject({ step: 'preview', format: 'bofa_credit' });
+    expect(back.rows.map((r) => [r.line, r.status])).toEqual([[2, 'new'], [3, 'unreadable']]);
+    commitImport(t, admin.id, p.id, [2]);
+    expect(t.db.select().from(csvImports).get()).toMatchObject({ format: 'bofa_credit' });
+    // Other columns still get the check.
+    const again = draft(t, admin.id, card.id, odd);
+    // The saved columns are Bank of America's own, so they apply as the built-in format does: no note that they didn't fit.
+    expect(again).toMatchObject({ prefilled: 'profile', format: 'bofa_credit', columns: { problem: null } });
+    expect(again.rows.map((r) => r.status)).toEqual(['already_imported', 'unreadable']);
+    expect(() => updateImport(t, admin.id, again.id, { ...BOFA_FORMAT.mapping, amount: { kind: 'signed', column: 4, purchasesNegative: false } })).toThrow(SPEND_MESSAGES.importBadDate(3, 'M/D/YYYY'));
+  });
+
+  it("reads a later Bank of America file with an odd row with the saved Bank of America columns, without saying they didn't fit", () => {
+    const { t, admin, card } = setup();
+    const first = draft(t, admin.id, card.id, FILE);
+    commitImport(t, admin.id, first.id, [2]);
+    expect(importProfileOf(t, card.id)).toMatchObject({ format: 'bofa_credit' });
+    const later = draft(t, admin.id, card.id, bofaCsv([{ ...coffee, reference: reference(7, 30) }, { ...netflix, reference: reference(7, 31), date: '13/01/2026' }]));
+    expect(later).toMatchObject({ step: 'preview', prefilled: 'profile', format: 'bofa_credit', columns: { problem: null } });
+    expect(later.rows.map((r) => [r.line, r.status])).toEqual([[2, 'new'], [3, 'unreadable']]);
+  });
+
+  it('opens the columns step, with why, when the saved columns fit the header but read no row', () => {
+    const { t, admin, card } = setup();
+    const first = draft(t, admin.id, card.id, GENERIC);
+    updateImport(t, admin.id, first.id, DEBIT_CREDIT);
+    commitImport(t, admin.id, first.id, [2]);
+    // Every row's description is empty: the dates and amounts read, but nothing can be imported.
+    const p = draft(t, admin.id, card.id, debitCreditCsv([{ date: '13/10/2026', description: '', debit: '4.50' }, { date: '14/10/2026', description: '', debit: '5.00' }]));
+    expect(p).toMatchObject({ step: 'columns', prefilled: 'profile', mapping: null, rows: [] });
+    expect(p.columns).toMatchObject({ suggested: DEBIT_CREDIT, problem: SPEND_MESSAGES.importSavedDoesntFit(SPEND_MESSAGES.importSavedReadNothing) });
+  });
+});
+
+describe('CSV import: the work a columns step costs (the final review)', () => {
+  const put = (t: TestApp, cookie: string, id: string, body: unknown) => call(t.app, 'PUT', `${P}/imports/${id}`, { cookie, body });
+
+  it("works out each column's date formats once, at upload, and answers every later step with them", () => {
+    const { t, admin, card } = setup();
+    const p = draft(t, admin.id, card.id, GENERIC);
+    const stored = t.db.select().from(csvImportPreviews).get()!;
+    expect(stored.plan!.dateFormats).toEqual(p.columns.dateFormats);
+    expect(p.columns.dateFormats[0]).toEqual(['dmy']);
+    // What PUT answers comes from the draft, not from reading every cell again.
+    t.db.update(csvImportPreviews).set({ plan: { ...stored.plan!, dateFormats: stored.plan!.dateFormats!.map(() => ['ymd' as const]) } }).run();
+    expect(updateImport(t, admin.id, p.id, DEBIT_CREDIT).columns.dateFormats[0]).toEqual(['ymd']);
+  });
+
+  it('works them out for a draft saved before they were kept', () => {
+    const { t, admin, card } = setup();
+    const p = draft(t, admin.id, card.id, GENERIC);
+    const stored = t.db.select().from(csvImportPreviews).get()!;
+    const { dateFormats: _gone, ...older } = stored.plan!;
+    t.db.update(csvImportPreviews).set({ plan: older }).run();
+    expect(updateImport(t, admin.id, p.id, DEBIT_CREDIT).columns.dateFormats[0]).toEqual(['dmy']);
+  });
+
+  it('takes 30 column choices a minute per admin, apart from the 20 uploads', async () => {
+    const { t, admin, card } = setup();
+    const { id } = await json<ImportPreview>(await upload(t, admin.cookie, card.id, GENERIC), 201);
+    for (let n = 0; n < 30; n++) expect((await put(t, admin.cookie, id, { mapping: DEBIT_CREDIT })).status).toBe(200);
+    expect((await put(t, admin.cookie, id, { mapping: DEBIT_CREDIT })).status).toBe(429);
+    // Uploads have their own count.
+    expect((await upload(t, admin.cookie, card.id, FILE)).status).toBe(201);
+    t.clock.advance(60_000);
+    const again = await json<ImportPreview>(await upload(t, admin.cookie, card.id, GENERIC), 201);
+    expect((await put(t, admin.cookie, again.id, { mapping: DEBIT_CREDIT })).status).toBe(200);
   });
 });

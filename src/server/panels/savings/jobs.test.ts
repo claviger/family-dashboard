@@ -65,4 +65,16 @@ describe('savings.pruneImports', () => {
     expect(t.db.select().from(savingsImportPreviews).all()).toEqual([]);
     expect(t.db.select().from(jobErrors).all()).toEqual([]);
   });
+
+  it('checkpoints the WAL each time it prunes, so a deleted draft does not linger in old WAL frames', async () => {
+    const t = makeTestApp();
+    const pragmas: string[] = [];
+    const pragma = t.sqlite.pragma.bind(t.sqlite);
+    t.sqlite.pragma = ((source: string, options?: Parameters<typeof pragma>[1]) => {
+      pragmas.push(source);
+      return pragma(source, options);
+    }) as typeof t.sqlite.pragma;
+    await runJob(t, savingsJobs(t).find((j) => j.name === 'savings.pruneImports')!);
+    expect(pragmas).toContain('wal_checkpoint(TRUNCATE)');
+  });
 });
