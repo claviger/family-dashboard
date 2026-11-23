@@ -1,7 +1,9 @@
 import { Link } from '@tanstack/react-router';
+import { useRef } from 'react';
 import { WEB_PANELS } from '../panels/registry.js';
 import { cardTitleId } from './cardTitleId.js';
 import { Icon, PanelBadge } from './PanelIcon.js';
+import { useMasonry } from './useMasonry.js';
 import { useMe } from './useMe.js';
 
 /**
@@ -10,11 +12,13 @@ import { useMe } from './useMe.js';
  */
 export function Home() {
   const me = useMe().data!;
+  const grid = useRef<HTMLDivElement>(null);
+  useMasonry(grid, me.panels.join(','));
   if (me.panels.length === 0) {
     return <p className="muted">No panels are turned on for you yet. Ask your admin.</p>;
   }
   return (
-    <div className="card-grid">
+    <div ref={grid} className="card-grid">
       {me.panels.map((id) => {
         const panel = WEB_PANELS[id];
         return (

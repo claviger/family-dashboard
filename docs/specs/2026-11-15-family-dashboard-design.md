@@ -268,7 +268,9 @@ Some settings live inside panel drill-downs instead: Spend settings (§12.12), S
 - **Home (`/`):**
   - A header with the family name, today's date, a gear icon for admins (opens `/admin`), and an avatar menu with personal settings and sign out.
   - Below the header, one summary card per granted panel, always in the order Calendar, To-do, Chores, Spend, Savings.
-- **Layout:** a CSS grid with `repeat(auto-fit, minmax(300px, 1fr))`. That gives one column on phones, two on laptops, and up to four on wide screens.
+- **Layout:** a CSS grid with `repeat(auto-fit, minmax(300px, 1fr))`, and four columns from 1500px. That gives one column on phones, two or three on laptops, and four on wide screens.
+  - On two or more columns the cards are a masonry: each card starts right below the card above it in its column, with the same gap as between columns, instead of below the tallest card in the row. A `ResizeObserver` measures each card and gives it a row span on small (2px) grid rows, through the CSSOM, so the strict CSP allows it; the grid gets its `masonry` class only once the spans are set. Placement is sparse, so a later card fills the gap under a shorter one but never moves ahead of an earlier card, and the DOM order (focus and screen-reader order) doesn't change.
+  - On one column, without JavaScript, and before the first measurement, the grid is the plain one, with no spans and no animation.
 - **Drill-down:**
   - Tapping a card opens `/calendar`, `/todo`, `/chores`, `/spend`, or `/savings` (`?month=`, `?tab=settings`) as a full-screen view with a back button.
   - Each view can be linked to directly, and the browser's back button works.
