@@ -377,8 +377,18 @@ export class FakePlaid {
     readonly secret = FAKE_PLAID_SECRET,
   ) {}
 
-  /** Drop-in `fetch` for PlaidClient. */
-  readonly fetch = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => this.handle(new Request(input, init));
+  /**
+   * Drop-in `fetch` for PlaidClient. The caller's own signal is passed on and listened to, not only
+   * the Request's copy of it: a `new Request` follows its signal through a weak reference, so once
+   * nothing else holds an `AbortSignal.timeout()` (the client keeps none), GC can collect it and its
+   * abort never reaches `req.signal`. A hung or delayed call would then never end, and a test would
+   * hit its own timeout, more often the busier the GC (a full run). Real `fetch` holds the signal
+   * for the request, so this is the fake's problem only.
+   */
+  readonly fetch = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+    const req = new Request(input, init);
+    return this.handle(req, init?.signal ?? req.signal);
+  };
 
   /** The body of the last request to `path`, or undefined. */
   lastBody(path: FakePlaidPath): Record<string, unknown> | undefined {
@@ -700,7 +710,8 @@ export class FakePlaid {
     return this.signingKey;
   }
 
-  async handle(req: Request): Promise<Response> {
+  /** `signal` is what a hang or delay waits on: the caller's own, when there is one (see `fetch`). */
+  async handle(req: Request, signal: AbortSignal = req.signal): Promise<Response> {
     const url = new URL(req.url);
     if ((this.origin && url.origin !== this.origin) || req.method !== 'POST' || !PATHS.has(url.pathname)) return new Response('Not found', { status: 404 });
     const path = url.pathname as FakePlaidPath;
@@ -726,9 +737,14 @@ export class FakePlaid {
       const { ms } = failure;
       await new Promise<void>((resolve, reject) => {
         const timer = setTimeout(resolve, ms);
-        req.signal.addEventListener('abort', () => {
+        if (signal.aborted) {
           clearTimeout(timer);
-          reject(req.signal.reason);
+          reject(signal.reason);
+          return;
+        }
+        signal.addEventListener('abort', () => {
+          clearTimeout(timer);
+          reject(signal.reason);
         }, { once: true });
       });
       // Then answered as usual: a failure queued behind it is for a later call.
@@ -737,8 +753,8 @@ export class FakePlaid {
       this.failures.splice(i, 1);
       if (failure.kind === 'drop') throw new TypeError('fetch failed');
       return new Promise<Response>((_, reject) => {
-        if (req.signal.aborted) reject(req.signal.reason);
-        req.signal.addEventListener('abort', () => reject(req.signal.reason), { once: true });
+        if (signal.aborted) reject(signal.reason);
+        signal.addEventListener('abort', () => reject(signal.reason), { once: true });
       });
     }
 
