@@ -47,6 +47,18 @@ describe('savingsSummary', () => {
     expect([summary.totalCents, summary.totalChangeCents, summary.stale, summary.attention]).toEqual([6800_00, 800_00, false, []]);
   });
 
+  it('gives a brokerage its market change this month, and a cash account none', () => {
+    const { t } = family();
+    // Brokerage: 5600 − 5000 − the 500 deposit.
+    expect(savingsSummary(t).accounts.map((a) => [a.account.kind, a.marketChangeCents])).toEqual([['cash', null], ['investment', 100_00]]);
+  });
+
+  it("gives no market change for a brokerage whose flows aren't known", () => {
+    const { t, item } = family();
+    t.db.update(plaidItems).set({ investmentsStatus: 'unavailable', investmentsErrorCode: 'PRODUCTS_NOT_SUPPORTED' }).where(eq(plaidItems.id, item.id)).run();
+    expect(savingsSummary(t).accounts.map((a) => [a.account.kind, a.monthChangeCents, a.marketChangeCents])).toEqual([['cash', 200_00, null], ['investment', 600_00, null]]);
+  });
+
   it('leaves out hidden and removed accounts', () => {
     const { t, cash, brokerage } = family();
     t.db.update(savingsAccounts).set({ hiddenAt: t.clock.now() }).where(eq(savingsAccounts.id, cash.id)).run();

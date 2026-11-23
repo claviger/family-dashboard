@@ -308,6 +308,12 @@ export const SavingsSummarySchema = z.object({
     balanceSource: z.enum(SAVINGS_BALANCE_SOURCES).nullable(),
     /** This month's total change (`end − start`), signed. */
     monthChangeCents: z.number().nullable(),
+    /**
+     * A brokerage's market change this month (the breakdown's `changeCents`: the total change less
+     * deposits, plus withdrawals), signed. Null for a cash account, and when the month's flows aren't
+     * known (flowsAvailable false), since then it can't be told apart from money moved in or out.
+     */
+    marketChangeCents: z.number().nullable(),
     stale: z.boolean(),
   })),
   totalCents: z.number().nullable(),

@@ -312,6 +312,9 @@ for (const s of SIZES) {
       await expect(cardRow(page, f.cash)).toContainText('+$250.00 this month');
       await expect(cardRow(page, f.brokerage)).toContainText('$26,100.00');
       await expect(cardRow(page, f.brokerage)).toContainText('+$2,100.00 this month');
+      // 26100 − 24000 − the 1000 deposit; the dividend isn't a flow, so it's market change.
+      await expect(cardRow(page, f.brokerage)).toContainText('+$1,100.00 market change');
+      await expect(cardRow(page, f.cash)).not.toContainText('market change');
       await expect(homeCard(page)).toContainText(/Updated /);
       await expect(homeCard(page)).not.toContainText(`PAYROLL ${stamp}`);
 
