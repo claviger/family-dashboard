@@ -56,7 +56,7 @@ The first month after linking has no end-of-last-month snapshot: it starts from 
 
 ## Home card
 
-- Each shown account: nickname, current balance, and this month's change (with + or −).
+- Each shown account: nickname, current balance, and this month's change (with + or −). A brokerage also shows its market change this month (the change less deposits, plus withdrawals), when its deposits and withdrawals are known; otherwise only the change.
 - The total across shown accounts.
 - A "stale" note when the latest snapshot is more than a day old, as Spend does for its data.
 

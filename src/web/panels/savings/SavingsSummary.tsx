@@ -10,7 +10,7 @@ import { useSavingsSummary } from './queries.js';
 
 /**
  * The home card (the Savings spec, "Home card"): each shown account's nickname, balance, and this
- * month's change; the total; when the balances were read; a stale note when the oldest is more
+ * month's change, plus a brokerage's market change when its flows are known; the total; when the balances were read; a stale note when the oldest is more
  * than a day old (26 hours, plan decision 13) by the server's clock, ticking. A connection that
  * needs reconnecting says so instead of the stale note, with Reconnect for admins (a full page
  * load to the Link page, which reads the purpose from the connection and comes back to Savings).
@@ -56,6 +56,7 @@ export function SavingsSummary() {
                 <span className="todo-main">
                   <span className="todo-title">{accountLabel(a.account)}</span>
                   {a.monthChangeCents !== null && <span className="todo-due savings-num">{signedMoney(a.monthChangeCents)} this month</span>}
+                  {a.marketChangeCents !== null && <span className="todo-due savings-num">{signedMoney(a.marketChangeCents)} market change</span>}
                   {summaryBalanceLine(a) && <span className="todo-due">{summaryBalanceLine(a)}</span>}
                 </span>
                 <span className="savings-amount">{a.balanceCents === null ? <span className="todo-due">{a.account.source === 'manual' ? 'No balance yet' : 'Not synced yet'}</span> : money(a.balanceCents)}</span>

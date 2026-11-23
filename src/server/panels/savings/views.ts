@@ -149,6 +149,7 @@ export function savingsSummary(deps: SavingsReadDeps): SavingsSummary {
       balanceDate: latest?.date ?? null,
       balanceSource: latest ? (latest.source ?? 'plaid') : null,
       monthChangeCents: breakdown.totalChangeCents,
+      marketChangeCents: a.account.kind === 'investment' ? breakdown.changeCents : null,
       // Nothing refreshes a hand-added account (plan decision 23).
       stale: a.account.source === 'plaid' && fetched !== null && now.getTime() - fetched.fetchedAt.getTime() > SAVINGS_STALE_AFTER_MS,
     };
